@@ -24,7 +24,7 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--page); color: var(--text);
          font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  header { padding: 20px 28px 0; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header { padding: 20px 28px 0; max-width: 1500px; margin: 0 auto; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
   h1 { font-size: 18px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
   #question { color: var(--text2); flex: 1; min-width: 200px; }
   main { padding: 16px 28px 48px; max-width: 1500px; margin: 0 auto; }
@@ -84,6 +84,7 @@
     <label class="rec">From <select id="d0"></select></label>
     <label class="rec">To <select id="d1"></select></label>
     <label class="rec">Hours <span><select id="h0"></select> – <select id="h1"></select></span></label>
+    <label>Trades <select id="grp" title="One incoming order can fill against several resting orders"><option value="1">Grouped by order</option><option value="0">Every fill</option></select></label>
     <label>Time zone <select id="tz"><option value="local">Local</option><option value="utc">UTC</option></select></label>
     <label class="rec">&nbsp;<button class="primary" id="load">Load</button></label>
     <label class="live hide">Token ID <input type="text" id="token" placeholder="CLOB token id"></label>
@@ -108,7 +109,7 @@
     <div class="grid">
       <div class="card c8"><h3>Best bid, best ask and trades</h3><p>Price of the recorded outcome token</p><div class="plot" id="p-price"></div></div>
       <div class="card c4"><h3>Depth at end of window</h3><p>Cumulative resting size by price</p><div class="plot" id="p-depth"></div></div>
-      <div class="card c8"><h3>Resting size by price over time</h3><p>Darker means more size at that level</p><div class="plot" id="p-heat"></div></div>
+      <div class="card c8"><h3>Resting size by price over time</h3><p id="s-heat"></p><div class="plot" id="p-heat"></div></div>
       <div class="card c4"><h3>Spread</h3><p id="s-spread"></p><div class="plot" id="p-spread"></div></div>
       <div class="card c12"><h3>Book imbalance, top 5 levels</h3><p>(bid size − ask size) / (bid size + ask size); +1 is all bids</p><div class="plot" id="p-imb" style="height:220px"></div></div>
     </div>
@@ -138,6 +139,8 @@
       <label>Horizon <select id="hor"><option>5</option><option selected>10</option><option>30</option><option>60</option></select></label>
     </div>
     <div class="grid">
+      <div class="card c6"><h3>Chance the next price step is up</h3><p id="s-step"></p><div class="plot" id="p-step"></div></div>
+      <div class="card c6"><h3>Wait until the next price step</h3><p>Median seconds until the mid next changes, by imbalance now</p><div class="plot" id="p-wait"></div></div>
       <div class="card c6"><h3>Mid move after a given imbalance</h3><p id="s-imb"></p><div class="plot" id="p-imbresp"></div></div>
       <div class="card c6"><h3>Signed trade volume against mid change</h3><p id="s-flow"></p><div class="plot" id="p-flowret"></div></div>
       <div class="card c4"><h3>Trade size distribution</h3><p id="s-size"></p><div class="plot" id="p-size"></div></div>

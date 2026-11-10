@@ -41,6 +41,8 @@ only; **Export CSV** saves whatever is loaded, in the recorder's format.
 - The feed is level 2: sizes per price level, not individual orders. "Added" and "cancelled"
   size are inferred from level changes; a size drop within 250 ms of a trade at that price is
   treated as a fill.
+- Fills that share a transaction hash and side are merged into one trade by default
+  ("Grouped by order"); switch Trades to "Every fill" to see them separately.
 - Only the first outcome token of each market is recorded; the other one mirrors it.
 - The Hawkes model is `mu + n*beta*sum(exp(-beta*(t - t_j)))`, fitted by maximum likelihood
   over all loaded windows. `n` is the branching ratio.

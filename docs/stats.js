@@ -65,7 +65,7 @@
     const t0 = rows.length ? rows[0].t : 0, t1 = rows.length ? rows[rows.length - 1].t : 0;
     const out = {
       t0, t1,
-      trades: { t: [], p: [], s: [], sign: [] },
+      trades: { t: [], p: [], s: [], sign: [] }, fills: 0,
       adds: { t: [], s: [], side: [] },
       cancels: { t: [], s: [], side: [] },
       updates: { t: [] },
@@ -73,6 +73,7 @@
       heat: { t: [], books: [] },
       ticks: [],
     };
+    let lastHash = "";
     let nextGrid = Math.ceil((first ? first.t : t0) / 1000) * 1000;
     const heatStep = Math.max(1000, Math.ceil((t1 - t0) / heatCols / 1000) * 1000);
     let nextHeat = nextGrid;
@@ -114,8 +115,15 @@
           out.cancels.t.push(r.t); out.cancels.s.push(-d); out.cancels.side.push(isBid ? 1 : -1);
         }
       } else if (r.ev === "trade") {
-        out.trades.t.push(r.t); out.trades.p.push(r.p); out.trades.s.push(r.s);
-        out.trades.sign.push(r.side === "BUY" ? 1 : -1);
+        // One incoming order can fill against several resting orders and is then reported
+        // as several trades. With groupFills, fills of the same transaction (or, without a
+        // hash, the same millisecond) and side are merged into one trade at the average price.
+        const T = out.trades, n = T.t.length, sg = r.side === "BUY" ? 1 : -1, h = r.raw ? r.raw[8] : "";
+        out.fills++;
+        if (opts.groupFills && n && T.sign[n - 1] === sg && (h ? h === lastHash : r.t === T.t[n - 1])) {
+          T.p[n - 1] = (T.p[n - 1] * T.s[n - 1] + r.p * r.s) / (T.s[n - 1] + r.s); T.s[n - 1] += r.s;
+        } else { T.t.push(r.t); T.p.push(r.p); T.s.push(r.s); T.sign.push(sg); }
+        lastHash = h;
       } else if (r.ev === "tick") out.ticks.push({ t: r.t, tick: r.p });
     }
     if (loading) { bb = bestOf(bids, true); ba = bestOf(asks, false); ready = true; }
@@ -307,6 +315,42 @@
              n: cnt };
   }
 
+  /* For large-tick books: does imbalance now predict the direction of the next mid change?
+     Every 1-second sample before a price step is labelled with that step's direction.
+     Samples between two steps share one outcome, so the error bars use the number of
+     distinct steps seen in each bucket, not the number of samples. */
+  function nextStep(grids, key, bins) {
+    bins = bins || 8;
+    const up = new Array(bins).fill(0), cnt = new Array(bins).fill(0), steps = new Array(bins).fill(0);
+    const waits = Array.from({ length: bins }, () => []);
+    let total = 0, ups = 0, oneTick = 0, n = 0, tick = Infinity;
+    for (const g of grids) for (const s of g.spread) if (s > 1e-9 && s < tick) tick = s;
+    for (const g of grids) {
+      let start = 0;
+      for (const s of g.spread) { n++; if (s <= tick + 1e-9) oneTick++; }
+      for (let j = 1; j < g.t.length; j++) {
+        if (g.t[j] - g.t[j - 1] > 2000) { start = j; continue; } // gap: outcomes unknown
+        const d = g.mid[j] - g.mid[j - 1];
+        if (Math.abs(d) < 1e-9) continue;
+        total++; if (d > 0) ups++;
+        const seen = new Set();
+        for (let i = start; i < j; i++) {
+          const b = Math.min(bins - 1, Math.floor(((g[key][i] + 1) / 2) * bins));
+          cnt[b]++; if (d > 0) up[b]++; seen.add(b);
+          waits[b].push((g.t[j] - g.t[i]) / 1000);
+        }
+        for (const b of seen) steps[b]++;
+        start = j;
+      }
+    }
+    const med = (a) => { if (!a.length) return null; a.sort((x, y) => x - y); return a[a.length >> 1]; };
+    return { x: cnt.map((_, i) => -1 + (2 * (i + 0.5)) / bins),
+             pUp: cnt.map((c, i) => (c ? up[i] / c : null)),
+             se: cnt.map((c, i) => { if (!c) return 0; const p = up[i] / c; return Math.sqrt((p * (1 - p)) / Math.max(1, steps[i])); }),
+             steps, wait: waits.map(med), total, ups, tick: Number.isFinite(tick) ? tick : null,
+             oneTickShare: n ? oneTick / n : null };
+  }
+
   /* Signed trade volume vs mid change over windows of `w` seconds, with OLS fit. */
   function flowVsReturn(segs, w) {
     const xs = [], ys = [];
@@ -353,7 +397,7 @@
   }
 
   const api = { parseCSV, replaySegment, prepareTimes, interArrivals, poissonFit, hawkesFit, hawkesNLL,
-                ksTest, qqExp, acf, histogram, ccdf, imbalanceResponse, flowVsReturn, signature,
+                ksTest, qqExp, acf, histogram, ccdf, imbalanceResponse, nextStep, flowVsReturn, signature,
                 hourlyProfile, nelderMead, mulberry32, mean };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.LOB = api;

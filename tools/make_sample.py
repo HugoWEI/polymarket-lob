@@ -87,7 +87,7 @@ def run(out: Path, days=("2026-11-07", "2026-11-08", "2026-11-09"), h0=10, h1=15
                 size = min(round(rng.paretovariate(1.6) * 40, 2), book[k])
                 send({"event_type": "last_trade_price", "asset_id": ASSET, "price": px(k),
                       "size": f"{size:.2f}", "side": "BUY" if sign > 0 else "SELL",
-                      "transaction_hash": "0xsynthetic"}, ts)
+                      "transaction_hash": f"0xsynthetic{int(ts * 1000)}"}, ts)
                 change(rest, k, round(book[k] - size, 2), ts)
             else:
                 side = "BUY" if rng.random() < 0.5 else "SELL"

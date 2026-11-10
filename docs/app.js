@@ -13,7 +13,7 @@
   };
   const S = {
     base: (new URLSearchParams(location.search).get("data") || store.get("lob-base") || DEFAULT_BASE).replace(/\/$/, ""),
-    index: null, mode: "rec", segs: [], raw: [], tz: "local",
+    index: null, mode: "rec", segs: [], groups: [], raw: [], tz: "local",
     live: { ws: null, rows: [], raw: [], timer: null, hb: null },
   };
 
@@ -68,7 +68,11 @@
       status(`Could not read ${S.base}/index.json (${e.message}). Check the data source.`);
       return;
     }
-    const names = Object.keys(S.index.markets);
+    // markets still being recorded first, then by amount of data
+    const stat = (n) => { const h = S.index.markets[n].hours, d = Object.keys(h).sort(), l = d[d.length - 1] || "";
+                          return [l + "/" + pad(l ? Math.max(...h[l]) : 0), d.reduce((a, k) => a + h[k].length, 0)]; };
+    const names = Object.keys(S.index.markets).sort((a, b) => { const x = stat(a), y = stat(b);
+      return x[0] === y[0] ? y[1] - x[1] : x[0] < y[0] ? 1 : -1; });
     $("market").innerHTML = names.map((n) => `<option value="${n}">${n}</option>`).join("");
     fillDates();
     status(`Data source: ${S.base} · last recorder update ${S.index.updated || "unknown"}`);
@@ -116,17 +120,19 @@
         else groups.push({ start: f.ms, last: f.ms, rows: LOB.parseCSV(texts[i]) });
       });
       S.raw = [];
-      S.segs = groups.filter((g) => g.rows.length).map((g) => {
-        for (const r of g.rows) S.raw.push(r.raw);
-        const s = LOB.replaySegment(g.rows);
-        s.label = `${tstr(g.start).slice(0, 16)} → ${tstr(g.last + 3600000).slice(11, 16)}`;
-        return s;
-      });
+      S.groups = groups.filter((g) => g.rows.length);
+      for (const g of S.groups) { for (const r of g.rows) S.raw.push(r.raw);
+        g.label = `${tstr(g.start).slice(0, 16)} → ${tstr(g.last + 3600000).slice(11, 16)}`; }
+      replayAll();
       const n = S.raw.length;
       status(`Loaded ${fmt(n, 0)} rows from ${files.length} hour(s) in ${S.segs.length} window(s) · ${S.base}`);
       fillSegs(); renderAll();
     } catch (e) { status(`Load failed: ${e.message}`); }
     $("load").disabled = false;
+  }
+  function replayAll() {
+    const groupFills = $("grp").value === "1";
+    S.segs = S.groups.map((g) => { const s = LOB.replaySegment(g.rows, { groupFills }); s.label = g.label; return s; });
   }
   function confirmLarge(n) { status(`That selection is ${n} hourly files. Narrow the dates or hours (limit 96).`); return false; }
 
@@ -145,14 +151,15 @@
   }
 
   function renderKpis(h) {
-    let trades = 0, vol = 0, upd = 0, secs = 0, sp = 0, gn = 0;
+    let trades = 0, vol = 0, upd = 0, secs = 0, sp = 0, gn = 0, fills = 0;
     for (const s of S.segs) {
+      fills += s.fills;
       trades += s.trades.t.length; upd += s.updates.t.length; secs += (s.t1 - s.t0) / 1000;
       for (const v of s.trades.s) vol += v;
       for (const v of s.grid.spread) { sp += v; gn++; }
     }
     const items = [
-      ["Book updates", fmt(upd, 0)], ["Trades", fmt(trades, 0)], ["Traded size", fmt(vol)],
+      ["Book updates", fmt(upd, 0)], [fills > trades * 1.01 ? `Trades (${fmt(fills, 0)} fills)` : "Trades", fmt(trades, 0)], ["Traded size", fmt(vol)],
       ["Trades per minute", fmt(secs ? (trades / secs) * 60 : NaN, 2)], ["Mean spread", fmt(gn ? sp / gn : NaN, 4)],
       ["Hours loaded", fmt(secs / 3600, 1)],
     ];
@@ -189,6 +196,7 @@
       { x: ca.map((v) => v[0]), y: ca.map((v) => v[1]), name: "Asks", mode: "lines", fill: "tozeroy", line: { color: ask, width: 2, shape: "vh" }, fillcolor: ask + "33" },
     ], { xaxis: { title: "Price" }, yaxis: { title: "Cumulative size" } });
 
+    $("s-heat").textContent = `${matchMedia("(prefers-color-scheme: dark)").matches ? "Brighter" : "Darker"} means more size at that level`;
     // heatmap of resting size
     const H = s.heat;
     if (H.t.length > 1) {
@@ -252,6 +260,21 @@
 
   function renderFlow() {
     const bid = css("--bid"), ask = css("--ask"), ink = css("--ink"), grids = S.segs.map((s) => s.grid);
+    const ns = LOB.nextStep(grids, $("imbkey").value);
+    if (ns.total >= 1) {
+      plot("p-step", [
+        { type: "bar", x: ns.x, y: ns.pUp, marker: { color: bid }, name: "Share up", customdata: ns.steps,
+          error_y: { type: "data", array: ns.se.map((v) => 1.96 * v), color: ink, thickness: 1, width: 3 },
+          hovertemplate: "imbalance %{x:.2f}<br>next step up %{y:.0%}<br>%{customdata} price steps<extra></extra>" },
+        { x: [-1.05, 1.05], y: [0.5, 0.5], mode: "lines", line: { color: ink, width: 1, dash: "dash" }, showlegend: false, hoverinfo: "skip" },
+      ], { bargap: 0.2, xaxis: { title: "Imbalance now", range: [-1.05, 1.05] }, yaxis: { title: "Share of next steps that go up", range: [0, 1.05], tickformat: ".0%" } });
+      plot("p-wait", [{ type: "bar", x: ns.x, y: ns.wait, marker: { color: bid }, name: "Median wait",
+                        hovertemplate: "imbalance %{x:.2f}<br>median wait %{y:,.0f}s<extra></extra>" }],
+           { bargap: 0.2, xaxis: { title: "Imbalance now", range: [-1.05, 1.05] }, yaxis: { title: "Seconds", rangemode: "tozero" } });
+    } else { empty("p-step", "No price step in this selection"); empty("p-wait", "No price step in this selection"); }
+    $("s-step").textContent = `${ns.total} price step${ns.total === 1 ? "" : "s"} in the selection (${ns.ups} up)` +
+      (ns.oneTickShare != null ? ` · spread at its minimum ${(ns.oneTickShare * 100).toFixed(0)}% of the time` : "") +
+      (ns.total < 30 ? " · too few steps to conclude" : "");
     const h = +$("hor").value, ir = LOB.imbalanceResponse(grids, h, $("imbkey").value);
     plot("p-imbresp", [{ type: "bar", x: ir.x, y: ir.y, marker: { color: bid }, name: "Mean move",
                          error_y: { type: "data", array: ir.se.map((v) => 1.96 * v), color: ink, thickness: 1, width: 3 },
@@ -309,7 +332,7 @@
   function liveRefresh() {
     const L = S.live;
     if (!L.rows.length) return;
-    const s = LOB.replaySegment(L.rows);
+    const s = LOB.replaySegment(L.rows, { groupFills: $("grp").value === "1" });
     s.label = `Live since ${tstr(L.rows[0].t).slice(11, 19)}`;
     S.segs = [s]; S.raw = L.raw;
     const first = !$("segsel").options.length || $("segsel").options[0].textContent !== s.label;
@@ -388,6 +411,7 @@
     $("market").onchange = () => { fillDates(); loadSelection(); };
     $("tz").onchange = () => { S.tz = $("tz").value; store.set("lob-tz", S.tz); if (S.mode === "rec") { fillDates(); loadSelection(); } else renderAll(); };
     $("segsel").onchange = renderBook;
+    $("grp").onchange = () => { if (S.mode === "rec" && S.groups.length) { replayAll(); renderAll(); } else if (S.mode === "live") liveRefresh(); };
     $("proc").onchange = renderArrivals;
     $("hor").onchange = renderFlow; $("imbkey").onchange = renderFlow;
     $("export").onclick = exportCSV;
