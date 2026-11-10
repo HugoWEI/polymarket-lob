@@ -4,6 +4,7 @@
   const $ = (id) => document.getElementById(id);
   const WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
   const GAMMA = "https://gamma-api.polymarket.com";
+  const DEFAULT_BASE = "https://storage.googleapis.com/hugowei-polymarket-lob"; // "sample" = synthetic data
   const HEADER = "recv_ns,ts_ms,event,side,price,size,best_bid,best_ask,hash";
 
   const store = {
@@ -11,7 +12,7 @@
     set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* storage unavailable */ } },
   };
   const S = {
-    base: (new URLSearchParams(location.search).get("data") || store.get("lob-base") || "sample").replace(/\/$/, ""),
+    base: (new URLSearchParams(location.search).get("data") || store.get("lob-base") || DEFAULT_BASE).replace(/\/$/, ""),
     index: null, mode: "rec", segs: [], raw: [], tz: "local",
     live: { ws: null, rows: [], raw: [], timer: null, hb: null },
   };

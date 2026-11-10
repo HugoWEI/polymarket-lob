@@ -86,7 +86,7 @@ def _from_gamma(m: dict) -> Market:
 
 
 def resolve_markets(specs: list[str]) -> list[Market]:
-    """Each spec is `top`, `top:N`, a market slug, or a raw CLOB token id."""
+    """Each spec is `top`, `top:N`, `long`, `long:N`, a market slug, or a raw CLOB token id."""
     out: list[Market] = []
     for spec in specs:
         if spec == "top" or spec.startswith("top:"):
@@ -94,6 +94,16 @@ def resolve_markets(specs: list[str]) -> list[Market]:
             rows = _gamma("/markets", active="true", closed="false", order="volume24hr",
                           ascending="false", limit=n)
             out += [_from_gamma(m) for m in rows]
+        elif spec == "long" or spec.startswith("long:"):
+            # most traded markets that stay open for at least 30 more days
+            n = int(spec.split(":")[1]) if ":" in spec else 1
+            rows = _gamma("/markets", active="true", closed="false", order="volume24hr",
+                          ascending="false", limit=200)
+            cutoff = datetime.fromtimestamp(time.time() + 30 * 86400, tz=timezone.utc).isoformat()
+            keep = [m for m in rows if (m.get("endDate") or "") >= cutoff][:n]
+            if not keep:
+                raise SystemExit("No long-running market found among the 200 most traded")
+            out += [_from_gamma(m) for m in keep]
         elif re.fullmatch(r"\d{20,}", spec):
             out.append(Market(slug=f"token-{spec[:12]}", asset_id=spec))
         else:
@@ -306,7 +316,8 @@ async def sync_loop(writer: HourlyWriter, uploader, every: int, stop: asyncio.Ev
 async def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--market", action="append", default=[],
-                    help="`top`, `top:N`, a market slug, or a CLOB token id (repeatable)")
+                    help="`top[:N]` most traded, `long[:N]` most traded with 30+ days left, "
+                         "a market slug, or a CLOB token id (repeatable)")
     ap.add_argument("--out", default="data", help="local output directory")
     ap.add_argument("--bucket", help="GCS bucket to mirror to (optional)")
     ap.add_argument("--sync-seconds", type=int, default=60)

@@ -16,7 +16,8 @@ tools/      make_sample.py: regenerates the synthetic sample
 pip install -r recorder/requirements.txt
 python recorder/recorder.py --check                 # can this machine reach the feed?
 python recorder/recorder.py --market top --out data # most traded market by 24h volume
-python recorder/recorder.py --market top:3 --market some-market-slug --bucket my-bucket
+python recorder/recorder.py --market long:3 --market some-market-slug --bucket my-bucket
+# top[:N] = most traded now; long[:N] = most traded among markets with 30+ days left
 ```
 
 Files land in `<out>/<slug>/<YYYY-MM-DD>/<HH>.csv` (UTC). Each row is one event

@@ -5,7 +5,7 @@
 #   PROJECT=my-project BUCKET=my-polymarket-lob ./deploy/gcp_setup.sh
 #
 # Optional: ZONE (default us-central1-a, where e2-micro is in the free tier),
-#           MARKETS (default "top"; space-separated: top:3, a slug, or a token id)
+#           MARKETS (default "top"; space-separated: top:3, long:3, a slug, or a token id)
 set -euo pipefail
 : "${PROJECT:?set PROJECT}" "${BUCKET:?set BUCKET}"
 ZONE="${ZONE:-us-central1-a}"
@@ -55,7 +55,7 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 UNIT
-sudo systemctl daemon-reload && sudo systemctl enable --now lob-recorder
+sudo systemctl daemon-reload && sudo systemctl enable lob-recorder && sudo systemctl restart lob-recorder
 sleep 5 && sudo systemctl --no-pager status lob-recorder | head -12
 "
 echo
