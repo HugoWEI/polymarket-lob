@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polymarket order book lab</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f4f4f2; --surface: #fcfcfb; --line: #e3e2dd; --grid: #ecebe7;
+    --text: #0b0b0b; --text2: #52514e; --muted: #8a8983;
+    --bid: #2a78d6; --ask: #eb6834; --third: #1baf7a; --ink: #3b3a37;
+    --seq-lo: #e8f1fd; --seq-hi: #0d366b; --warn-bg: #fff4dc; --warn-text: #6b4a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #111110; --surface: #1a1a19; --line: #2e2e2b; --grid: #262624;
+      --text: #f0efec; --text2: #c3c2b7; --muted: #8a8983;
+      --bid: #3987e5; --ask: #d95926; --third: #199e70; --ink: #c3c2b7;
+      --seq-lo: #16263b; --seq-hi: #9ec5f4; --warn-bg: #3a2c08; --warn-text: #f1d48a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--text);
+         font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 20px 28px 0; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 18px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+  #question { color: var(--text2); flex: 1; min-width: 200px; }
+  main { padding: 16px 28px 48px; max-width: 1500px; margin: 0 auto; }
+  .bar { background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+         padding: 12px 14px; display: flex; gap: 14px; align-items: end; flex-wrap: wrap; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text2);
+          text-transform: uppercase; letter-spacing: 0.04em; }
+  select, input, button { font: inherit; color: var(--text); background: var(--surface);
+          border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; height: 34px; }
+  input[type=text] { min-width: 260px; }
+  button { cursor: pointer; font-weight: 550; }
+  button.primary { background: var(--text); color: var(--surface); border-color: var(--text); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; height: 34px; }
+  .seg button { border: 0; border-radius: 0; height: 32px; color: var(--text2); }
+  .seg button.on { background: var(--text); color: var(--surface); }
+  .spacer { flex: 1; }
+  #status { font-size: 12.5px; color: var(--text2); margin: 10px 2px; min-height: 18px; }
+  #banner { display: none; background: var(--warn-bg); color: var(--warn-text); border-radius: 8px;
+            padding: 8px 12px; margin-bottom: 12px; font-size: 13px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 4px 0 16px; }
+  .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .kpi .v { font-size: 22px; font-weight: 620; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .kpi .l { font-size: 11.5px; color: var(--text2); }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+  .tabs button { border: 0; background: none; border-bottom: 2px solid transparent; border-radius: 0;
+                 color: var(--text2); padding: 8px 12px; height: auto; }
+  .tabs button.on { color: var(--text); border-bottom-color: var(--text); }
+  .tabbar { display: flex; gap: 14px; align-items: end; margin-bottom: 12px; flex-wrap: wrap; }
+  .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 12px 4px; min-width: 0; }
+  .card h3 { margin: 0 2px; font-size: 13.5px; font-weight: 600; }
+  .card p { margin: 2px 2px 0; font-size: 12px; color: var(--text2); min-height: 17px; }
+  .plot { height: 280px; }
+  .c12 { grid-column: span 12; } .c8 { grid-column: span 8; } .c6 { grid-column: span 6; } .c4 { grid-column: span 4; }
+  @media (max-width: 1000px) { .c8, .c6, .c4 { grid-column: span 12; } }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0 10px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { font-weight: 550; color: var(--text2); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .hide { display: none !important; }
+  .note { font-size: 12px; color: var(--text2); margin: 10px 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Polymarket order book lab</h1>
+  <span id="question"></span>
+</header>
+<main>
+  <div id="banner"></div>
+  <div class="bar">
+    <label>Mode
+      <span class="seg" id="mode"><button data-m="rec" class="on">Recorded</button><button data-m="live">Live</button></span>
+    </label>
+    <label class="rec">Market <select id="market"></select></label>
+    <label class="rec">From <select id="d0"></select></label>
+    <label class="rec">To <select id="d1"></select></label>
+    <label class="rec">Hours <span><select id="h0"></select> – <select id="h1"></select></span></label>
+    <label>Time zone <select id="tz"><option value="local">Local</option><option value="utc">UTC</option></select></label>
+    <label class="rec">&nbsp;<button class="primary" id="load">Load</button></label>
+    <label class="live hide">Token ID <input type="text" id="token" placeholder="CLOB token id"></label>
+    <label class="live hide">&nbsp;<button id="findtop">Find most traded</button></label>
+    <label class="live hide">&nbsp;<button class="primary" id="connect">Connect</button></label>
+    <span class="spacer"></span>
+    <label>&nbsp;<button id="export" disabled>Export CSV</button></label>
+    <label>&nbsp;<button id="source" title="Change where recorded data is read from">Data source</button></label>
+  </div>
+  <div id="status"></div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="tabs" id="tabs">
+    <button data-t="book" class="on">Book</button>
+    <button data-t="arr">Arrivals</button>
+    <button data-t="flow">Trades &amp; flow</button>
+  </div>
+
+  <section id="tab-book">
+    <div class="tabbar"><label>Window <select id="segsel"></select></label></div>
+    <div class="grid">
+      <div class="card c8"><h3>Best bid, best ask and trades</h3><p>Price of the recorded outcome token</p><div class="plot" id="p-price"></div></div>
+      <div class="card c4"><h3>Depth at end of window</h3><p>Cumulative resting size by price</p><div class="plot" id="p-depth"></div></div>
+      <div class="card c8"><h3>Resting size by price over time</h3><p>Darker means more size at that level</p><div class="plot" id="p-heat"></div></div>
+      <div class="card c4"><h3>Spread</h3><p id="s-spread"></p><div class="plot" id="p-spread"></div></div>
+      <div class="card c12"><h3>Book imbalance, top 5 levels</h3><p>(bid size − ask size) / (bid size + ask size); +1 is all bids</p><div class="plot" id="p-imb" style="height:220px"></div></div>
+    </div>
+  </section>
+
+  <section id="tab-arr" class="hide">
+    <div class="tabbar">
+      <label>Event stream <select id="proc">
+        <option value="trades">Trades</option><option value="adds">Size added (inferred)</option>
+        <option value="cancels">Size cancelled (inferred)</option><option value="updates">All book updates</option>
+      </select></label>
+    </div>
+    <div class="card" style="margin-bottom:12px"><h3>Model fits</h3><div id="fit-table"></div></div>
+    <div class="grid">
+      <div class="card c4"><h3>Inter-arrival times</h3><p>Share of gaps longer than x; Poisson is a straight line</p><div class="plot" id="p-surv"></div></div>
+      <div class="card c4"><h3>QQ plot: Poisson</h3><p>Observed gaps against exponential quantiles</p><div class="plot" id="p-qqp"></div></div>
+      <div class="card c4"><h3>QQ plot: Hawkes</h3><p>Time-rescaled residuals against Exp(1)</p><div class="plot" id="p-qqh"></div></div>
+      <div class="card c6"><h3>Events per minute by hour of day</h3><p>Selected stream, averaged over loaded days</p><div class="plot" id="p-hrate"></div></div>
+      <div class="card c6"><h3>Mean spread by hour of day</h3><p>&nbsp;</p><div class="plot" id="p-hspread"></div></div>
+    </div>
+    <p class="note">Timestamps are in milliseconds; ties are broken with uniform jitter inside the millisecond. The Hawkes baseline is constant within the loaded selection, so load a narrow hour range to keep intraday seasonality out of the branching ratio.</p>
+  </section>
+
+  <section id="tab-flow" class="hide">
+    <div class="tabbar">
+      <label>Imbalance <select id="imbkey"><option value="imb1">Best level</option><option value="imb5">Top 5 levels</option></select></label>
+      <label>Horizon <select id="hor"><option>5</option><option selected>10</option><option>30</option><option>60</option></select></label>
+    </div>
+    <div class="grid">
+      <div class="card c6"><h3>Mid move after a given imbalance</h3><p id="s-imb"></p><div class="plot" id="p-imbresp"></div></div>
+      <div class="card c6"><h3>Signed trade volume against mid change</h3><p id="s-flow"></p><div class="plot" id="p-flowret"></div></div>
+      <div class="card c4"><h3>Trade size distribution</h3><p id="s-size"></p><div class="plot" id="p-size"></div></div>
+      <div class="card c4"><h3>Trade sign autocorrelation</h3><p>Dashed lines: 95% band under independence</p><div class="plot" id="p-acf"></div></div>
+      <div class="card c4"><h3>Volatility signature</h3><p>Mid volatility per √second by sampling interval</p><div class="plot" id="p-sig"></div></div>
+    </div>
+  </section>
+</main>
+<script src="vendor/plotly.min.js"></script>
+<script src="stats.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

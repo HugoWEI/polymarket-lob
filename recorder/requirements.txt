@@ -1,0 +1,2 @@
+websockets>=12
+google-cloud-storage>=2.10
