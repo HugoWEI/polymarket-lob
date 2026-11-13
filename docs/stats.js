@@ -494,15 +494,16 @@
         if (!sd.pend || sd.pend.t > t) continue;
         const k = sd.pend.k; sd.pend = null;
         if (k == null) { sd.live = null; continue; }
-        const L = lvl(isBid, k);
-        sd.live = L > 0 && (isBid ? k < ba : k > bb) ? { k, rem: o.size, ahead: L } : null;
+        const L = lvl(isBid, k), room = isBid ? o.maxInv - inv : o.maxInv + inv, q = Math.min(o.size, room);
+        sd.live = L > 0 && q > 0 && (isBid ? k < ba : k > bb) ? { k, rem: q, ahead: L } : null;
       }
     };
     const decide = (t) => {
       if (!ok()) return;
       const qb = bids.get(bb), qa = asks.get(ba), I = (qb - qa) / (qb + qa);
-      const want = { bid: inv + o.size <= o.maxInv && !(I < -o.theta) ? bb : null,
-                     ask: inv - o.size >= -o.maxInv && !(I > o.theta) ? ba : null };
+      // quote only the room left under the inventory limit (a smaller order near the limit)
+      const want = { bid: inv < o.maxInv && !(I < -o.theta) ? bb : null,
+                     ask: inv > -o.maxInv && !(I > o.theta) ? ba : null };
       for (const nm of ["bid", "ask"]) {
         const sd = side[nm], cur = sd.pend ? sd.pend.k : sd.live ? sd.live.k : null;
         if (cur !== want[nm]) sd.pend = { t: t + o.latency, k: want[nm] };

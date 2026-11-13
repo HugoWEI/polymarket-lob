@@ -417,6 +417,7 @@
     const base = { size: +$("btsize").value, maxInv: +$("btinv").value, latency: +$("btlat").value,
                    feeBps: Math.max(0, +$("btfee").value || 0), sampleMs: 60000 };
     const th = +$("btth").value;
+    if (base.size > base.maxInv) base.size = base.maxInv; // a quote cannot exceed the inventory limit
     const strat = [{ name: "Always quote", o: Object.assign({}, base, { theta: 2 }), color: css("--ask") },
                    { name: `Imbalance rule (±${th})`, o: Object.assign({}, base, { theta: th }), color: css("--bid") }];
     const hs = [1, 2, 5, 10, 30, 60, 300];
@@ -454,7 +455,7 @@
     </table>`;
     const better = B.pnl > A.pnl, d = B.pnl - A.pnl;
     $("s-bt").textContent = `${fmt(hours, 1)} hours replayed. ` +
-      (A.fills + B.fills === 0 ? "Neither strategy was filled; try a smaller quote size or a busier market."
+      (A.fills + B.fills === 0 ? "Neither strategy was filled. The quote may be too large to get past the size queued ahead; try a smaller quote size or a busier market."
         : `The imbalance rule ${better ? "added" : "cost"} ${usd(Math.abs(d))} against always quoting, ` +
           `trading ${fmt(B.shares, 0)} shares instead of ${fmt(A.shares, 0)}. ` +
           (A.mark[3] != null ? `Ten seconds after a fill, always-quote fills were worth ${c(A.mark[3])} a share and imbalance-rule fills ${c(B.mark[3])}.` : ""));
