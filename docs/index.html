@@ -175,6 +175,9 @@
       <label>Imbalance jump rule <select id="btjump" title="Pull the quote on the side about to be hit when top-5 imbalance moves this far from its 30-minute average"><option value="off">Off</option><option value="0.15">Jump of 0.15</option><option value="0.2" selected>Jump of 0.2</option><option value="0.3">Jump of 0.3</option></select></label>
       <label>Activity kill switch <select id="btkill" title="Uses activity in 10-second bins against the previous six hours"><option value="0">Off</option><option value="1">Pull quotes 10 min</option><option value="2" selected>Pull quotes and close position</option></select></label>
       <label>Latency <select id="btlat"><option value="0">None</option><option value="250" selected>250 ms</option><option value="1000">1 s</option><option value="5000">5 s</option></select></label>
+      <label title="Polymarket's daily liquidity-reward pool for this market, its maximum spread in cents and its minimum order size. Filled in from the recorder when it has them; edit to test.">Reward pool $/day <input type="number" id="btpool" value="0" min="0" step="1" style="width:90px"></label>
+      <label>Max spread ¢ <input type="number" id="btv" value="3" min="0" step="0.5" style="width:70px"></label>
+      <label>Min size <input type="number" id="btmin" value="0" min="0" step="1" style="width:80px"></label>
       <label>Maker fee, bps <input type="number" id="btfee" value="0" min="0" step="1" style="width:80px"></label>
       <label>&nbsp;<button class="primary" id="btrun">Run backtest</button></label>
     </div>
@@ -185,12 +188,13 @@
       <div class="card c6"><h3>What happens after a fill</h3><p>Average gain per share against the mid, some seconds after being filled. Below zero means the price moved against us.</p><div class="plot" id="p-btmark"></div></div>
       <div class="card c6"><h3>P&amp;L by day</h3><p id="s-btday">Dollars per day</p><div class="plot" id="p-btday"></div></div>
     </div>
-    <p class="note">Your rules: the level rule pulls a quote while best-level imbalance is beyond the threshold. The jump rule pulls the quote about to be hit for 30 seconds when top-5 imbalance moves that far from its 30-minute average. The kill switch counts trades and book updates in 10-second bins and fires above 5 standard deviations of the previous six hours (it needs 30 minutes of history); it then pulls both quotes for 10 minutes and can close the position at the prices on the book, paying the spread.</p>
+    <p class="note">Your rules: the level rule pulls a quote while best-level imbalance is beyond the threshold. The jump rule pulls the quote about to be hit for 30 seconds when top-5 imbalance moves that far from its 30-minute average. The kill switch counts trades and book updates in 10-second bins and fires when a bin holds at least 20 events and is above 5 standard deviations of the previous six hours (it needs 30 minutes of history); it then pulls both quotes for 10 minutes and can close the position at the prices on the book, paying the spread.</p>
+    <p class="note">Liquidity rewards are an estimate. Once a minute the backtest scores your quotes with Polymarket's published formula and divides by your score plus everyone else's, computed from the recorded book as a single block of liquidity; the real share depends on how that liquidity splits between makers and on a multiplier Polymarket does not publish (taken as 1). Rewards are paid for resting orders whether filled or not, and only to orders at least the minimum size.</p>
     <p class="note">Assumptions: quotes join the back of the queue at the best bid and ask and never create new price levels. We are filled only by size beyond what was queued ahead of us, so the fills are conservative. Our orders do not change what other traders did, which holds only for sizes small next to the book. Inventory left at the end of each loaded window is marked at the mid, not sold. Polymarket charges most makers no fee; set one to test sensitivity.</p>
   </section>
 </main>
 <script src="vendor/plotly.min.js"></script>
-<script src="stats.js?v=7"></script>
-<script src="app.js?v=7"></script>
+<script src="stats.js?v=8"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>

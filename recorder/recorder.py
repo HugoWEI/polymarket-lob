@@ -48,6 +48,7 @@ import websockets
 
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 GAMMA = "https://gamma-api.polymarket.com"
+CLOB = "https://clob.polymarket.com"
 COLUMNS = ["recv_ns", "ts_ms", "event", "side", "price", "size", "best_bid", "best_ask", "hash"]
 log = logging.getLogger("recorder")
 
@@ -117,6 +118,32 @@ def resolve_markets(specs: list[str]) -> list[Market]:
             seen.add(m.asset_id)
             uniq.append(m)
     return uniq
+
+
+def fetch_rewards(condition_ids: set[str]) -> dict:
+    """Liquidity-reward settings of the given markets, keyed by condition id.
+    Reads GET /rewards/markets/multi (public), following next_cursor to the end."""
+    want = {c.lower() for c in condition_ids if c}
+    out, cursor, today = {}, "", datetime.now(timezone.utc).date().isoformat()
+    for _ in range(200):
+        url = f"{CLOB}/rewards/markets/multi?page_size=500" + (f"&next_cursor={cursor}" if cursor else "")
+        req = urllib.request.Request(url, headers={"User-Agent": "polymarket-lob-recorder"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.load(r)
+        for m in data.get("data") or []:
+            cid = (m.get("condition_id") or "").lower()
+            if cid not in want:
+                continue
+            rate = 0.0
+            for c in m.get("rewards_config") or []:
+                if (c.get("start_date") or "") <= today <= (c.get("end_date") or "9999-12-31"):
+                    rate += float(c.get("rate_per_day") or 0)
+            out[cid] = {"min_size": m.get("rewards_min_size"), "max_spread": m.get("rewards_max_spread"),
+                        "rate_per_day": rate}
+        cursor = data.get("next_cursor") or ""
+        if not cursor or cursor == "LTE=":
+            break
+    return out
 
 
 # ------------------------------------------------------------------ writer ---
@@ -217,6 +244,14 @@ class HourlyWriter:
                     [recv_ns, ts, "tick", "", ev.get("new_tick_size", ""),
                      ev.get("old_tick_size", ""), "", "", ""])
 
+    def set_rewards(self, found: dict):
+        """Store today's reward settings (UTC day) for each market that has them."""
+        day = datetime.now(timezone.utc).date().isoformat()
+        for m in self.markets.values():
+            s = found.get((m.condition_id or "").lower())
+            if s:
+                self.index["markets"][m.slug].setdefault("rewards", {})[day] = s
+
     def flush(self) -> list[Path]:
         """Flush open files, rewrite the manifest, return paths changed since last call."""
         for key, fh, _ in self.files.values():
@@ -301,7 +336,16 @@ async def stream(markets: list[Market], writer: HourlyWriter, stop: asyncio.Even
 
 
 async def sync_loop(writer: HourlyWriter, uploader, every: int, stop: asyncio.Event):
+    last_rewards = 0.0
     while True:
+        if time.time() - last_rewards > 6 * 3600:  # reward settings change rarely
+            last_rewards = time.time()
+            try:
+                found = await asyncio.to_thread(fetch_rewards, {m.condition_id for m in writer.markets.values()})
+                writer.set_rewards(found)
+                log.info("reward settings found for %d market(s)", len(found))
+            except Exception as e:  # never stop recording over this
+                log.warning("could not read reward settings: %s", e)
         try:
             await asyncio.wait_for(stop.wait(), timeout=every)
         except asyncio.TimeoutError:

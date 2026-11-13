@@ -95,6 +95,12 @@
     const m = S.index.markets[$("market").value];
     $("question").textContent = m.question ? `${m.question}${m.outcome ? " · " + m.outcome : ""}` : $("market").value;
     $("token").value = $("token").value || m.asset_id || "";
+    // latest liquidity-reward settings saved by the recorder, if any
+    const rd = m.rewards ? Object.keys(m.rewards).sort() : [], rs = rd.length ? m.rewards[rd[rd.length - 1]] : null;
+    $("btpool").value = rs ? rs.rate_per_day || 0 : 0;
+    $("btv").value = rs && rs.max_spread != null ? rs.max_spread : 3;
+    $("btmin").value = rs && rs.min_size != null ? rs.min_size : 0;
+    S.rwSource = rs ? `reward settings saved by the recorder on ${rd[rd.length - 1]}` : null;
     const days = [...new Set(availableHours().map((h) => h.day))];
     const opts = days.map((d) => `<option>${d}</option>`).join("");
     $("d0").innerHTML = opts; $("d1").innerHTML = opts;
@@ -415,7 +421,9 @@
     S.btDirty = false;
     const groups = S.mode === "live" ? [{ rows: S.live.rows }] : S.groups;
     const base = { size: +$("btsize").value, maxInv: +$("btinv").value, latency: +$("btlat").value,
-                   feeBps: Math.max(0, +$("btfee").value || 0), sampleMs: 60000 };
+                   feeBps: Math.max(0, +$("btfee").value || 0), sampleMs: 60000,
+                   rw: { pool: Math.max(0, +$("btpool").value || 0), v: Math.max(0, +$("btv").value || 0), min: Math.max(0, +$("btmin").value || 0) } };
+    const rwOn = base.rw.pool > 0 && base.rw.v > 0;
     if (base.size > base.maxInv) base.size = base.maxInv; // a quote cannot exceed the inventory limit
     const th = +$("btth").value, jv = $("btjump").value, kill = +$("btkill").value;
     const rules = { theta: th, jump: jv === "off" ? Infinity : +jv, kill, killMins: 10 };
@@ -429,11 +437,14 @@
     for (const st of strat) {
       st.runs = groups.map((g) => LOB.backtestMM(g.rows, st.o));
       st.pnl = 0; st.fills = 0; st.shares = 0; st.maxInv = 0; st.dd = 0; st.fees = 0;
-      st.t = []; st.cum = []; st.inv = []; st.kills = []; st.closes = 0;
+      st.t = []; st.cum = []; st.inv = []; st.kills = []; st.closes = 0; st.rw = 0; st.cumRw = []; st.shareW = 0;
       let off = 0, mkN = hs.map(() => 0), mkD = hs.map(() => 0);
       for (const r of st.runs) {
-        for (let i = 0; i < r.series.t.length; i++) { st.t.push(r.series.t[i]); st.cum.push(off + r.series.pnl[i]); st.inv.push(r.series.inv[i]); }
-        if (r.series.t.length) { st.t.push(null); st.cum.push(null); st.inv.push(null); } // gap between windows
+        for (let i = 0; i < r.series.t.length; i++) { st.t.push(r.series.t[i]); st.cum.push(off + r.series.pnl[i]); st.inv.push(r.series.inv[i]);
+          st.cumRw.push(off + st.rw + r.series.pnl[i] + r.series.rw[i]); }
+        if (r.series.t.length) { st.t.push(null); st.cum.push(null); st.inv.push(null); st.cumRw.push(null); } // gap between windows
+        st.shareW += r.avgShare * r.series.t.length;
+        st.rw += r.rewards;
         for (const kt of r.kills) { let j = 0; while (j < r.series.t.length - 1 && r.series.t[j + 1] <= kt) j++;
           st.kills.push({ t: kt, y: off + (r.series.pnl[j] || 0) }); }
         st.closes += r.closes;
@@ -442,6 +453,8 @@
         LOB.markouts(r, hs).forEach((v, i) => { if (v != null) { mkN[i] += v * r.shares; mkD[i] += r.shares; } });
       }
       st.pnl = off;
+      const nS = st.runs.reduce((a, r) => a + r.series.t.length, 0);
+      st.avgShare = nS ? st.shareW / nS : 0;
       st.mark = mkN.map((v, i) => (mkD[i] ? v / mkD[i] : null));
     }
     const [A, B] = strat, c = (v) => (v == null ? "–" : (v * 100).toFixed(2) + "¢");
@@ -459,16 +472,26 @@
       ${row("Largest drawdown", (x) => usd(x.dd))}
       ${row("Fees paid", (x) => usd(x.fees))}
       ${row("Kill switch triggers / positions closed", (x) => `${fmt(x.kills.length, 0)} / ${fmt(x.closes, 0)}`)}
+      ${rwOn ? row("Liquidity rewards, estimated", (x) => usd(x.rw)) : ""}
+      ${rwOn ? row("Average share of the reward pool", (x) => (x.avgShare * 100).toFixed(1) + "%") : ""}
+      ${rwOn ? row("<b>P&L including rewards</b>", (x) => `<b>${usd(x.pnl + x.rw)}</b>`) : ""}
+      ${rwOn ? row("P&L including rewards, per day", (x) => usd(hours ? ((x.pnl + x.rw) / hours) * 24 : NaN)) : ""}
     </table>`;
     const better = B.pnl > A.pnl, d = B.pnl - A.pnl;
     $("s-bt").textContent = `${fmt(hours, 1)} hours replayed. ` +
       (A.fills + B.fills === 0 ? "Neither strategy was filled. The quote may be too large to get past the size queued ahead; try a smaller quote size or a busier market."
         : `Your rules ${better ? "added" : "cost"} ${usd(Math.abs(d))} against always quoting, ` +
           `trading ${fmt(B.shares, 0)} shares instead of ${fmt(A.shares, 0)}. ` +
-          (A.mark[3] != null ? `Ten seconds after a fill, always-quote fills were worth ${c(A.mark[3])} a share and your rules' fills ${c(B.mark[3])}.` : ""));
+          (A.mark[3] != null ? `Ten seconds after a fill, always-quote fills were worth ${c(A.mark[3])} a share and your rules' fills ${c(B.mark[3])}.` : "")) +
+      (rwOn ? ` Rewards use a pool of ${usd(base.rw.pool)} a day, ${base.rw.v}¢ max spread, ${fmt(base.rw.min, 0)} shares minimum` +
+              (S.rwSource ? ` (${S.rwSource}).` : " (entered by hand).") +
+              (base.size < base.rw.min ? ` Your quote size is below the minimum, so it earns no rewards.` : "")
+            : " Liquidity rewards are not counted: enter the market's daily reward pool to include them.");
 
     const T = (st) => st.t.map((t) => (t == null ? null : tstr(t)));
     plot("p-btpnl", strat.map((st) => ({ x: T(st), y: st.cum, name: st.name, mode: "lines", line: { color: st.color, width: 2 }, connectgaps: false }))
+         .concat(rwOn ? strat.map((st) => ({ x: T(st), y: st.cumRw, name: `${st.name.split(" (")[0]}, incl. rewards`, mode: "lines",
+                                              line: { color: st.color, width: 2, dash: "dot" }, connectgaps: false })) : [])
          .concat(B.kills.length ? [{ x: B.kills.map((k) => tstr(k.t)), y: B.kills.map((k) => k.y), name: "Kill switch fired", mode: "markers",
                                      marker: { color: css("--ink"), size: 9, symbol: "x" } }] : []),
          { yaxis: { title: "Dollars" }, hovermode: "x unified" });
@@ -481,11 +504,13 @@
     // daily P&L from the sampled series
     const days = [...new Set(strat.flatMap((st) => st.t.filter((t) => t != null).map(dayOf)))].sort();
     const daily = (st) => { const end = {}, start = {};
-      st.runs.forEach((r) => { let prevDay = null, carry = 0;
+      st.runs.forEach((r) => { let prevDay = null;
+        const val = (i) => r.series.pnl[i] + (rwOn ? r.series.rw[i] : 0);
         for (let i = 0; i < r.series.t.length; i++) { const dy = dayOf(r.series.t[i]);
-          if (dy !== prevDay) { start[dy] = (start[dy] || 0) + (i ? r.series.pnl[i - 1] : 0); if (prevDay) end[prevDay] = (end[prevDay] || 0) + r.series.pnl[i - 1]; prevDay = dy; } }
-        if (prevDay) end[prevDay] = (end[prevDay] || 0) + r.series.pnl[r.series.pnl.length - 1]; });
+          if (dy !== prevDay) { start[dy] = (start[dy] || 0) + (i ? val(i - 1) : 0); if (prevDay) end[prevDay] = (end[prevDay] || 0) + val(i - 1); prevDay = dy; } }
+        if (prevDay) end[prevDay] = (end[prevDay] || 0) + val(r.series.pnl.length - 1); });
       return days.map((dy) => (end[dy] || 0) - (start[dy] || 0)); };
+    $("s-btday").textContent = rwOn ? "Dollars per day, including estimated rewards" : "Dollars per day";
     plot("p-btday", strat.map((st) => ({ type: "bar", x: days, y: daily(st), name: st.name, marker: { color: st.color } })),
          { barmode: "group", bargap: 0.3, yaxis: { title: "Dollars" }, xaxis: { type: "category" } });
   }
