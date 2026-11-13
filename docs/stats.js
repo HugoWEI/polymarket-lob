@@ -124,10 +124,11 @@
           T.p[n - 1] = (T.p[n - 1] * T.s[n - 1] + r.p * r.s) / (T.s[n - 1] + r.s); T.s[n - 1] += r.s;
         } else { T.t.push(r.t); T.p.push(r.p); T.s.push(r.s); T.sign.push(sg); }
         lastHash = h;
-      } else if (r.ev === "tick") out.ticks.push({ t: r.t, tick: r.p });
+      } else if (r.ev === "tick") out.ticks.push({ t: r.t, tick: r.p, old: r.s });
     }
     if (loading) { bb = bestOf(bids, true); ba = bestOf(asks, false); ready = true; }
     sample(t1);
+    out.grid.ticks = out.ticks;
     out.book = { bids: Array.from(bids).sort((a, b) => b[0] - a[0]).map(([k, s]) => [k / K, s]),
                  asks: Array.from(asks).sort((a, b) => a[0] - b[0]).map(([k, s]) => [k / K, s]) };
     return out;
@@ -327,7 +328,14 @@
     for (const g of grids) for (const s of g.spread) if (s > 1e-9 && s < tick) tick = s;
     for (const g of grids) {
       let start = 0;
-      for (const s of g.spread) { n++; if (s <= tick + 1e-9) oneTick++; }
+      // The tick size changes when the price nears 0 or 1. Use the recorded tick changes
+      // where there are any; otherwise the smallest spread seen stands in for the tick.
+      const tk = (g.ticks || []).slice().sort((a, b) => a.t - b.t);
+      let ki = 0, cur = tk.length ? tk[0].old : tick;
+      for (let i = 0; i < g.spread.length; i++) {
+        while (ki < tk.length && tk[ki].t <= g.t[i]) cur = tk[ki++].tick;
+        n++; if (g.spread[i] <= cur + 1e-9) oneTick++;
+      }
       for (let j = 1; j < g.t.length; j++) {
         if (g.t[j] - g.t[j - 1] > 2000) { start = j; continue; } // gap: outcomes unknown
         const d = g.mid[j] - g.mid[j - 1];
@@ -349,6 +357,79 @@
              se: cnt.map((c, i) => { if (!c) return 0; const p = up[i] / c; return Math.sqrt((p * (1 - p)) / Math.max(1, steps[i])); }),
              steps, wait: waits.map(med), total, ups, tick: Number.isFinite(tick) ? tick : null,
              oneTickShare: n ? oneTick / n : null };
+  }
+
+  /* Average price to buy `sizes` shares by taking the resting asks, sampled every `step` ms
+     between t0 and t1. null where the book does not hold that much. */
+  function sweepSeries(rows, t0, t1, step, sizes) {
+    const bids = new Map(), asks = new Map();
+    let loading = false, ready = false, next = t0;
+    const out = { t: [], cost: sizes.map(() => []), ask: [], bid: [] };
+    const snap = (t) => {
+      while (next <= t && next <= t1) {
+        if (ready) {
+          const lv = Array.from(asks).sort((a, b) => a[0] - b[0]);
+          out.t.push(next);
+          sizes.forEach((q, k) => {
+            let rem = q, c = 0;
+            for (const [p, s] of lv) { const x = Math.min(rem, s); c += x * p; rem -= x; if (rem <= 1e-9) break; }
+            out.cost[k].push(rem <= 1e-9 ? c / q / K : null);
+          });
+          out.ask.push(lv.length ? lv[0][0] / K : null);
+          out.bid.push(bids.size ? bestOf(bids, true) / K : null);
+        }
+        next += step;
+      }
+    };
+    for (const r of rows) {
+      if (r.ev === "snapshot") { bids.clear(); asks.clear(); loading = true; ready = false; continue; }
+      if (r.ev === "book") { (r.side === "BUY" ? bids : asks).set(Math.round(r.p * K), r.s); continue; }
+      if (loading) { loading = false; ready = true; }
+      if (r.t > t1) break;
+      snap(r.t);
+      if (r.ev === "change") { const book = r.side === "BUY" ? bids : asks, k = Math.round(r.p * K); if (r.s === 0) book.delete(k); else book.set(k, r.s); }
+    }
+    if (loading) ready = true;
+    snap(t1);
+    return out;
+  }
+
+  /* Summary of one replayed segment between times a and b (ms). */
+  function windowStats(s, a, b) {
+    let tr = 0, size = 0, net = 0, upd = 0, sp = 0, im = 0, n = 0, rv = 0, m0 = null, m1 = null, prev = null;
+    for (let i = 0; i < s.trades.t.length; i++) { const t = s.trades.t[i]; if (t >= a && t < b) { tr++; size += s.trades.s[i]; net += s.trades.sign[i] * s.trades.s[i]; } }
+    for (const t of s.updates.t) if (t >= a && t < b) upd++;
+    const g = s.grid;
+    for (let i = 0; i < g.t.length; i++) {
+      if (g.t[i] < a || g.t[i] >= b) continue;
+      sp += g.spread[i]; im += g.imb5[i]; n++;
+      if (m0 == null) m0 = g.mid[i];
+      m1 = g.mid[i];
+      if (prev != null) rv += (g.mid[i] - prev) ** 2;
+      prev = g.mid[i];
+    }
+    const mins = (b - a) / 60000;
+    return { trades: tr, tradesPerMin: tr / mins, size, net, updatesPerMin: upd / mins, spread: n ? sp / n : null,
+             imb: n ? im / n : null, midStart: m0, midEnd: m1, vol: n > 1 ? Math.sqrt(rv / n) : null, seconds: n };
+  }
+
+  /* Start of the largest mid move over `span` seconds across all segments. */
+  function detectEvent(segs, span) {
+    span = span || 300;
+    let best = null;
+    segs.forEach((s, si) => {
+      const g = s.grid;
+      for (let i = 0; i + span < g.t.length; i += 5) {
+        if (g.t[i + span] - g.t[i] > (span + 5) * 1000) continue;
+        const d = Math.abs(g.mid[i + span] - g.mid[i]);
+        if (!best || d > best.d) best = { d, si, i };
+      }
+    });
+    if (!best) return null;
+    const g = segs[best.si].grid;
+    let j = best.i;
+    while (j < best.i + span && Math.abs(g.mid[j] - g.mid[best.i]) < 0.1 * best.d) j++;
+    return { seg: best.si, t: g.t[Math.max(best.i, j - 1)], move: best.d };
   }
 
   /* Signed trade volume vs mid change over windows of `w` seconds, with OLS fit. */
@@ -397,7 +478,7 @@
   }
 
   const api = { parseCSV, replaySegment, prepareTimes, interArrivals, poissonFit, hawkesFit, hawkesNLL,
-                ksTest, qqExp, acf, histogram, ccdf, imbalanceResponse, nextStep, flowVsReturn, signature,
+                ksTest, qqExp, acf, histogram, ccdf, imbalanceResponse, nextStep, sweepSeries, windowStats, detectEvent, flowVsReturn, signature,
                 hourlyProfile, nelderMead, mulberry32, mean };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.LOB = api;

@@ -74,6 +74,8 @@
     const names = Object.keys(S.index.markets).sort((a, b) => { const x = stat(a), y = stat(b);
       return x[0] === y[0] ? y[1] - x[1] : x[0] < y[0] ? 1 : -1; });
     $("market").innerHTML = names.map((n) => `<option value="${n}">${n}</option>`).join("");
+    const want = new URLSearchParams(location.search).get("market");
+    if (want && names.includes(want)) $("market").value = want;
     fillDates();
     status(`Data source: ${S.base} · last recorder update ${S.index.updated || "unknown"}`);
     if (names.length) loadSelection();
@@ -145,7 +147,7 @@
   // --------------------------------------------------------------- render ---
   function renderAll() {
     if (!S.segs.length) return;
-    renderKpis(); renderBook(); renderFlow();
+    renderKpis(); renderBook(); renderFlow(); renderEvent();
     // the Hawkes fit is the slow part: let the page paint first
     setTimeout(renderArrivals, 20);
   }
@@ -191,7 +193,8 @@
     const cum = (lv) => { let c = 0; return lv.map(([p, q]) => [p, (c += q)]); };
     const mid = g.mid[g.mid.length - 1], near = (lv) => lv.filter(([p]) => Math.abs(p - mid) <= 0.15);
     const cb = cum(near(s.book.bids)), ca = cum(near(s.book.asks));
-    plot("p-depth", [
+    if (!cb.length && !ca.length) empty("p-depth", "The book is empty at the end of this window");
+    else plot("p-depth", [
       { x: cb.map((v) => v[0]), y: cb.map((v) => v[1]), name: "Bids", mode: "lines", fill: "tozeroy", line: { color: bid, width: 2, shape: "vh" }, fillcolor: bid + "33" },
       { x: ca.map((v) => v[0]), y: ca.map((v) => v[1]), name: "Asks", mode: "lines", fill: "tozeroy", line: { color: ask, width: 2, shape: "vh" }, fillcolor: ask + "33" },
     ], { xaxis: { title: "Price" }, yaxis: { title: "Cumulative size" } });
@@ -273,7 +276,7 @@
            { bargap: 0.2, xaxis: { title: "Imbalance now", range: [-1.05, 1.05] }, yaxis: { title: "Seconds", rangemode: "tozero" } });
     } else { empty("p-step", "No price step in this selection"); empty("p-wait", "No price step in this selection"); }
     $("s-step").textContent = `${ns.total} price step${ns.total === 1 ? "" : "s"} in the selection (${ns.ups} up)` +
-      (ns.oneTickShare != null ? ` · spread at its minimum ${(ns.oneTickShare * 100).toFixed(0)}% of the time` : "") +
+      (ns.oneTickShare != null ? ` · spread one tick wide ${(ns.oneTickShare * 100).toFixed(0)}% of the time` : "") +
       (ns.total < 30 ? " · too few steps to conclude" : "");
     const h = +$("hor").value, ir = LOB.imbalanceResponse(grids, h, $("imbkey").value);
     plot("p-imbresp", [{ type: "bar", x: ir.x, y: ir.y, marker: { color: bid }, name: "Mean move",
@@ -310,6 +313,77 @@
     const lags = [1, 2, 5, 10, 30, 60, 120, 300], sig = LOB.signature(grids, lags);
     plot("p-sig", [{ x: lags, y: sig, mode: "lines+markers", line: { color: bid, width: 2 }, marker: { size: 8 }, name: "Volatility" }],
          { xaxis: { type: "log", title: "Sampling interval, seconds" }, yaxis: { title: "Volatility per √s", rangemode: "tozero" } });
+  }
+
+  // ---------------------------------------------------------------- event ---
+  function parseEv() {
+    const v = $("evtime").value;
+    if (!v) return null;
+    return S.tz === "utc" ? Date.parse(v + "Z") : new Date(v).getTime();
+  }
+  function setEv(ms) { $("evtime").value = tstr(ms).slice(0, 19).replace(" ", "T"); }
+  function findEvent() {
+    const ev = LOB.detectEvent(S.segs);
+    if (ev) setEv(ev.t);
+    return ev;
+  }
+  function renderEvent(keep) {
+    const ids = ["p-evprice", "p-evcost", "p-evflow", "p-evimb"];
+    if (!S.segs.length) return;
+    if (keep !== true || parseEv() == null) findEvent();
+    const e = parseEv(), W = +$("evwin").value * 60000;
+    const si = S.segs.findIndex((s) => e >= s.t0 && e <= s.t1);
+    if (e == null || si < 0) { $("ev-table").innerHTML = `<p class="note">That time is outside the loaded data.</p>`; ids.forEach((p) => empty(p)); return; }
+    const s = S.segs[si], a = Math.max(s.t0, e - W), b = Math.min(s.t1, e + W);
+    const bid = css("--bid"), ask = css("--ask"), third = css("--third"), ink = css("--ink");
+    const line = { shapes: [{ type: "line", xref: "x", yref: "paper", x0: tstr(e), x1: tstr(e), y0: 0, y1: 1, line: { color: ink, width: 1.5, dash: "dot" } }] };
+
+    const B = LOB.windowStats(s, a, e), A = LOB.windowStats(s, e, b);
+    const row = (l, f) => `<tr><td>${l}</td><td>${f(B)}</td><td>${f(A)}</td></tr>`;
+    $("ev-table").innerHTML = `<table>
+      <tr><th>Measure</th><th>Before (${fmt((e - a) / 60000, 0)} min)</th><th>After (${fmt((b - e) / 60000, 0)} min)</th></tr>
+      ${row("Mid price, start → end", (x) => `${fmt(x.midStart, 3)} → ${fmt(x.midEnd, 3)}`)}
+      ${row("Trades per minute", (x) => fmt(x.tradesPerMin, 2))}
+      ${row("Traded size", (x) => fmt(x.size))}
+      ${row("Net buying (buy − sell size)", (x) => fmt(x.net))}
+      ${row("Book updates per minute", (x) => fmt(x.updatesPerMin, 1))}
+      ${row("Mean spread", (x) => fmt(x.spread, 4))}
+      ${row("Mean imbalance, top 5 levels", (x) => fmt(x.imb, 2))}
+      ${row("Mid volatility per √second", (x) => fmt(x.vol, 5))}
+    </table>`;
+
+    const g = s.grid, gi = [];
+    for (let i = 0; i < g.t.length; i++) if (g.t[i] >= a && g.t[i] <= b) gi.push(i);
+    if (!gi.length) { ids.forEach((p) => empty(p)); return; }
+    const ix = thin(gi.length, 3000).map((k) => gi[k]), T = ix.map((i) => tstr(g.t[i]));
+    const tr = [];
+    for (let i = 0; i < s.trades.t.length; i++) if (s.trades.t[i] >= a && s.trades.t[i] <= b) tr.push(i);
+    const ti = thin(tr.length, 2500).map((k) => tr[k]);
+    plot("p-evprice", [
+      { x: T, y: ix.map((i) => g.ask[i]), name: "Best ask", mode: "lines", line: { color: ask, width: 2, shape: "hv" } },
+      { x: T, y: ix.map((i) => g.bid[i]), name: "Best bid", mode: "lines", line: { color: bid, width: 2, shape: "hv" } },
+      { x: ti.map((i) => tstr(s.trades.t[i])), y: ti.map((i) => s.trades.p[i]), name: "Trades", mode: "markers", marker: { color: ink, size: 4, opacity: 0.55 } },
+    ], Object.assign({ yaxis: { title: "Price" }, hovermode: "x unified" }, line));
+
+    // cost to buy, from the event onwards
+    const sizes = [100, 1000, 10000], step = Math.max(1000, Math.round((b - e) / 600 / 1000) * 1000);
+    const sw = LOB.sweepSeries(S.groups[si].rows, e - Math.min(W, 10 * 60000), b, step, sizes);
+    const settle = A.midEnd, cols = [bid, ask, third];
+    if (sw.t.length) {
+      plot("p-evcost", sizes.map((q, k) => ({ x: sw.t.map(tstr), y: sw.cost[k], name: `${fmt(q, 0)} shares`, mode: "lines", connectgaps: false,
+                                              line: { color: cols[k], width: 2, shape: "hv" } })),
+           Object.assign({ yaxis: { title: "Average price paid" }, hovermode: "x unified" }, line));
+      const at = (mins, k) => { const i = sw.t.findIndex((t) => t >= e + mins * 60000); return i < 0 ? null : sw.cost[k][i]; };
+      const parts = [1, 5, 15].filter((m) => e + m * 60000 < b).map((m) => `${m} min after: ${fmt(at(m, 1), 3)}`);
+      $("s-evcost").textContent = `Average price to buy by taking the asks. For 1,000 shares, ${parts.join(" · ") || "no data"}; mid at end of window ${fmt(settle, 3)}`;
+    } else { empty("p-evcost"); $("s-evcost").textContent = ""; }
+
+    let c = 0;
+    plot("p-evflow", [{ x: tr.map((i) => tstr(s.trades.t[i])), y: tr.map((i) => (c += s.trades.sign[i] * s.trades.s[i])), mode: "lines", name: "Net buying",
+                        line: { color: bid, width: 2, shape: "hv" } }],
+         Object.assign({ yaxis: { title: "Cumulative buy − sell size" } }, line));
+    plot("p-evimb", [{ x: T, y: ix.map((i) => g.imb5[i]), mode: "lines", line: { color: ink, width: 1 }, name: "Imbalance" }],
+         Object.assign({ yaxis: { range: [-1.05, 1.05], title: "Imbalance" } }, line));
   }
 
   // ----------------------------------------------------------------- live ---
@@ -404,7 +478,7 @@
     document.querySelectorAll("#mode button").forEach((b) => (b.onclick = () => setMode(b.dataset.m)));
     document.querySelectorAll("#tabs button").forEach((b) => (b.onclick = () => {
       document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("on", x === b));
-      ["book", "arr", "flow"].forEach((t) => $("tab-" + t).classList.toggle("hide", t !== b.dataset.t));
+      ["book", "arr", "flow", "event"].forEach((t) => $("tab-" + t).classList.toggle("hide", t !== b.dataset.t));
       window.dispatchEvent(new Event("resize")); // plots drawn while hidden need a resize
     }));
     $("load").onclick = loadSelection;
@@ -413,6 +487,8 @@
     $("segsel").onchange = renderBook;
     $("grp").onchange = () => { if (S.mode === "rec" && S.groups.length) { replayAll(); renderAll(); } else if (S.mode === "live") liveRefresh(); };
     $("proc").onchange = renderArrivals;
+    $("evtime").onchange = () => renderEvent(true); $("evwin").onchange = () => renderEvent(true);
+    $("evfind").onclick = () => renderEvent(false);
     $("hor").onchange = renderFlow; $("imbkey").onchange = renderFlow;
     $("export").onclick = exportCSV;
     $("connect").onclick = connect; $("findtop").onclick = findTop;

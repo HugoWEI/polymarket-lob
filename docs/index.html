@@ -35,6 +35,7 @@
   select, input, button { font: inherit; color: var(--text); background: var(--surface);
           border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; height: 34px; }
   input[type=text] { min-width: 260px; }
+  #market { max-width: 330px; text-overflow: ellipsis; }
   button { cursor: pointer; font-weight: 550; }
   button.primary { background: var(--text); color: var(--surface); border-color: var(--text); }
   button:disabled { opacity: 0.45; cursor: default; }
@@ -102,6 +103,7 @@
     <button data-t="book" class="on">Book</button>
     <button data-t="arr">Arrivals</button>
     <button data-t="flow">Trades &amp; flow</button>
+    <button data-t="event">Event</button>
   </div>
 
   <section id="tab-book">
@@ -147,6 +149,21 @@
       <div class="card c4"><h3>Trade sign autocorrelation</h3><p>Dashed lines: 95% band under independence</p><div class="plot" id="p-acf"></div></div>
       <div class="card c4"><h3>Volatility signature</h3><p>Mid volatility per √second by sampling interval</p><div class="plot" id="p-sig"></div></div>
     </div>
+  </section>
+  <section id="tab-event" class="hide">
+    <div class="tabbar">
+      <label>Event time <input type="datetime-local" id="evtime" step="1"></label>
+      <label>Window each side <select id="evwin"><option value="30">30 minutes</option><option value="120" selected>2 hours</option><option value="360">6 hours</option><option value="720">12 hours</option></select></label>
+      <label>&nbsp;<button id="evfind">Find biggest move</button></label>
+    </div>
+    <div class="card" style="margin-bottom:12px"><h3>Before and after the event</h3><div id="ev-table"></div></div>
+    <div class="grid">
+      <div class="card c6"><h3>Price around the event</h3><p>Best bid, best ask and trades; dotted line marks the event time</p><div class="plot" id="p-evprice"></div></div>
+      <div class="card c6"><h3>Price you would have paid to buy</h3><p id="s-evcost"></p><div class="plot" id="p-evcost"></div></div>
+      <div class="card c6"><h3>Net buying, cumulative</h3><p>Buy size minus sell size since the start of the window</p><div class="plot" id="p-evflow"></div></div>
+      <div class="card c6"><h3>Book imbalance, top 5 levels</h3><p>+1 is all bids, −1 is all asks</p><div class="plot" id="p-evimb"></div></div>
+    </div>
+    <p class="note">One event shows what happened, not what will happen next time. A pattern before one event is a hypothesis to test on others.</p>
   </section>
 </main>
 <script src="vendor/plotly.min.js"></script>

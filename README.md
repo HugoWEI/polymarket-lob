@@ -43,6 +43,10 @@ only; **Export CSV** saves whatever is loaded, in the recorder's format.
   treated as a fill.
 - Fills that share a transaction hash and side are merged into one trade by default
   ("Grouped by order"); switch Trades to "Every fill" to see them separately.
+- The Event tab compares a window before and after a chosen time (by default the start of
+  the largest five-minute move) and shows the average price a buyer would have paid by taking
+  the resting asks at each moment after it.
+- Open the dashboard on a given market with `?market=<slug>`.
 - Only the first outcome token of each market is recorded; the other one mirrors it.
 - The Hawkes model is `mu + n*beta*sum(exp(-beta*(t - t_j)))`, fitted by maximum likelihood
   over all loaded windows. `n` is the branching ratio.
