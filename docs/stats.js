@@ -453,6 +453,119 @@
     return out;
   }
 
+  /* Market-making backtest on the recorded level-2 book.
+     We quote `size` shares at the best bid and best ask, joining the back of the queue.
+     Fill model (conservative): a trade at our price fills us only for the part that exceeds
+     the size queued ahead of us; the size ahead only shrinks when the level itself shrinks
+     below it. A trade through our price fills us completely. Our orders do not change what
+     other traders did. Every quote change takes `latency` ms to reach the book, and a quote
+     being cancelled can still be filled in the meantime.
+     Rule: with imbalance at the best level I = (bid - ask) / (bid + ask), pull the ask when
+     I > theta and pull the bid when I < -theta (theta >= 1 turns the rule off). Inventory is
+     capped at +/- maxInv shares. Negative inventory means selling shares we do not hold,
+     which on Polymarket is the same as buying the other outcome.
+     P&L is cash plus inventory marked at the mid, in dollars. */
+  function backtestMM(rows, o) {
+    const bids = new Map(), asks = new Map();
+    let loading = false, ready = false, bb = -Infinity, ba = Infinity;
+    const side = { bid: { live: null, pend: null }, ask: { live: null, pend: null } };
+    let inv = 0, cash = 0, fees = 0, maxInv = 0, peak = 0, dd = 0, nextS = null, lastT = null;
+    const fills = { t: [], dir: [], p: [], s: [] }, midT = [], midV = [], series = { t: [], pnl: [], inv: [] };
+    const lvl = (isBid, k) => (isBid ? bids : asks).get(k) || 0;
+    const ok = () => bb > -Infinity && ba < Infinity && bb < ba;
+    const mid = () => (bb + ba) / 2 / K;
+    const fill = (isBid, k, q, t) => {
+      const p = k / K, fee = (p * q * o.feeBps) / 1e4;
+      if (isBid) { inv += q; cash -= p * q; } else { inv -= q; cash += p * q; }
+      cash -= fee; fees += fee;
+      fills.t.push(t); fills.dir.push(isBid ? 1 : -1); fills.p.push(p); fills.s.push(q);
+      if (Math.abs(inv) > maxInv) maxInv = Math.abs(inv);
+    };
+    const sample = (ts) => {
+      if (!ok()) return;
+      const v = cash + inv * mid();
+      series.t.push(ts); series.pnl.push(v); series.inv.push(inv);
+      if (v > peak) peak = v;
+      if (peak - v > dd) dd = peak - v;
+    };
+    const execPending = (t) => {
+      for (const nm of ["bid", "ask"]) {
+        const sd = side[nm], isBid = nm === "bid";
+        if (!sd.pend || sd.pend.t > t) continue;
+        const k = sd.pend.k; sd.pend = null;
+        if (k == null) { sd.live = null; continue; }
+        const L = lvl(isBid, k);
+        sd.live = L > 0 && (isBid ? k < ba : k > bb) ? { k, rem: o.size, ahead: L } : null;
+      }
+    };
+    const decide = (t) => {
+      if (!ok()) return;
+      const qb = bids.get(bb), qa = asks.get(ba), I = (qb - qa) / (qb + qa);
+      const want = { bid: inv + o.size <= o.maxInv && !(I < -o.theta) ? bb : null,
+                     ask: inv - o.size >= -o.maxInv && !(I > o.theta) ? ba : null };
+      for (const nm of ["bid", "ask"]) {
+        const sd = side[nm], cur = sd.pend ? sd.pend.k : sd.live ? sd.live.k : null;
+        if (cur !== want[nm]) sd.pend = { t: t + o.latency, k: want[nm] };
+      }
+    };
+    for (const r of rows) {
+      if (r.ev === "snapshot") { bids.clear(); asks.clear(); loading = true; ready = false; continue; }
+      if (r.ev === "book") { (r.side === "BUY" ? bids : asks).set(Math.round(r.p * K), r.s); continue; }
+      if (loading) {
+        loading = false; ready = true; bb = bestOf(bids, true); ba = bestOf(asks, false);
+        for (const nm of ["bid", "ask"]) { const lv = side[nm].live; if (lv) lv.ahead = Math.min(lv.ahead, lvl(nm === "bid", lv.k)); }
+      }
+      if (!ready) continue;
+      const t = r.t;
+      if (nextS == null) nextS = Math.ceil(t / o.sampleMs) * o.sampleMs;
+      while (nextS <= t) { sample(nextS); nextS += o.sampleMs; }
+      execPending(t);
+      if (r.ev === "trade") {
+        const k = Math.round(r.p * K), buyAgg = r.side === "BUY", sd = buyAgg ? side.ask : side.bid, lv = sd.live;
+        if (lv) {
+          if (buyAgg ? k > lv.k : k < lv.k) { fill(!buyAgg, lv.k, lv.rem, t); sd.live = null; }
+          else if (k === lv.k && r.s > lv.ahead) {
+            const q = Math.min(lv.rem, r.s - lv.ahead);
+            fill(!buyAgg, lv.k, q, t); lv.rem -= q; lv.ahead = 0;
+            if (lv.rem <= 1e-9) sd.live = null;
+          }
+        }
+      } else if (r.ev === "change") {
+        const isBid = r.side === "BUY", book = isBid ? bids : asks, k = Math.round(r.p * K);
+        if (r.s === 0) book.delete(k); else book.set(k, r.s);
+        if (isBid) { if (r.s > 0 && k > bb) bb = k; else if (r.s === 0 && k === bb) bb = bestOf(bids, true); }
+        else { if (r.s > 0 && k < ba) ba = k; else if (r.s === 0 && k === ba) ba = bestOf(asks, false); }
+        const lv = (isBid ? side.bid : side.ask).live;
+        if (lv && lv.k === k && lv.ahead > r.s) lv.ahead = r.s;
+        if (ok() && (!midV.length || midV[midV.length - 1] !== mid())) { midT.push(t); midV.push(mid()); }
+      }
+      decide(t);
+      lastT = t;
+    }
+    if (lastT != null) sample(lastT);
+    let shares = 0;
+    for (const q of fills.s) shares += q;
+    return { pnl: series.pnl.length ? series.pnl[series.pnl.length - 1] : 0, fills, shares, maxInv, dd, fees,
+             series, midT, midV, endInv: inv };
+  }
+
+  /* Average gain per share of each fill, `h` seconds later, measured against the mid. */
+  function markouts(res, hs) {
+    const { midT, midV, fills } = res;
+    const midAt = (t) => { let lo = 0, hi = midT.length - 1, a = -1;
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (midT[m] <= t) { a = m; lo = m + 1; } else hi = m - 1; }
+      return a < 0 ? null : midV[a]; };
+    return hs.map((h) => {
+      let num = 0, den = 0;
+      for (let i = 0; i < fills.t.length; i++) {
+        const m = midAt(fills.t[i] + h * 1000);
+        if (m == null) continue;
+        num += fills.dir[i] * (m - fills.p[i]) * fills.s[i]; den += fills.s[i];
+      }
+      return den ? num / den : null;
+    });
+  }
+
   /* Start of the largest mid move over `span` seconds across all segments. */
   function detectEvent(segs, span) {
     span = span || 300;
@@ -518,7 +631,7 @@
   }
 
   const api = { parseCSV, replaySegment, prepareTimes, interArrivals, poissonFit, hawkesFit, hawkesNLL,
-                ksTest, qqExp, acf, histogram, ccdf, imbalanceResponse, nextStep, sweepSeries, windowStats, activityScore, detectEvent, flowVsReturn, signature,
+                ksTest, qqExp, acf, histogram, ccdf, imbalanceResponse, nextStep, sweepSeries, windowStats, activityScore, backtestMM, markouts, detectEvent, flowVsReturn, signature,
                 hourlyProfile, nelderMead, mulberry32, mean };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.LOB = api;

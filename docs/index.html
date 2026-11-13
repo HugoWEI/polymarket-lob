@@ -104,6 +104,7 @@
     <button data-t="arr">Arrivals</button>
     <button data-t="flow">Trades &amp; flow</button>
     <button data-t="event">Event</button>
+    <button data-t="bt">Backtest</button>
   </div>
 
   <section id="tab-book">
@@ -166,9 +167,27 @@
     </div>
     <p class="note">One event shows what happened, not what will happen next time. A pattern before one event is a hypothesis to test on others.</p>
   </section>
+  <section id="tab-bt" class="hide">
+    <div class="tabbar">
+      <label>Quote size <select id="btsize"><option>10</option><option selected>100</option><option>1000</option></select></label>
+      <label>Max inventory <select id="btinv"><option>300</option><option selected>1000</option><option>5000</option></select></label>
+      <label>Imbalance rule <select id="btth"><option value="0.4">Pull at ±0.4</option><option value="0.6" selected>Pull at ±0.6</option><option value="0.8">Pull at ±0.8</option></select></label>
+      <label>Latency <select id="btlat"><option value="0">None</option><option value="250" selected>250 ms</option><option value="1000">1 s</option><option value="5000">5 s</option></select></label>
+      <label>Maker fee, bps <input type="number" id="btfee" value="0" min="0" step="1" style="width:80px"></label>
+      <label>&nbsp;<button class="primary" id="btrun">Run backtest</button></label>
+    </div>
+    <div class="card" style="margin-bottom:12px"><h3>Two market makers on the recorded book</h3><p id="s-bt"></p><div id="bt-table"></div></div>
+    <div class="grid">
+      <div class="card c6"><h3>Cumulative P&amp;L</h3><p>Dollars, inventory marked at the mid</p><div class="plot" id="p-btpnl"></div></div>
+      <div class="card c6"><h3>Inventory</h3><p>Shares held; negative means short</p><div class="plot" id="p-btinv"></div></div>
+      <div class="card c6"><h3>What happens after a fill</h3><p>Average gain per share against the mid, some seconds after being filled. Below zero means the price moved against us.</p><div class="plot" id="p-btmark"></div></div>
+      <div class="card c6"><h3>P&amp;L by day</h3><p id="s-btday">Dollars per day</p><div class="plot" id="p-btday"></div></div>
+    </div>
+    <p class="note">Assumptions: quotes join the back of the queue at the best bid and ask and never create new price levels. We are filled only by size beyond what was queued ahead of us, so the fills are conservative. Our orders do not change what other traders did, which holds only for sizes small next to the book. Inventory left at the end of each loaded window is marked at the mid, not sold. Polymarket charges most makers no fee; set one to test sensitivity.</p>
+  </section>
 </main>
 <script src="vendor/plotly.min.js"></script>
-<script src="stats.js?v=4"></script>
-<script src="app.js?v=4"></script>
+<script src="stats.js?v=5"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

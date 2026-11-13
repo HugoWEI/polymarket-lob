@@ -148,6 +148,8 @@
   function renderAll() {
     if (!S.segs.length) return;
     renderKpis(); renderBook(); renderFlow(); renderEvent();
+    S.btDirty = true;
+    if (!$("tab-bt").classList.contains("hide")) setTimeout(renderBacktest, 30);
     // the Hawkes fit is the slow part: let the page paint first
     setTimeout(renderArrivals, 20);
   }
@@ -407,6 +409,77 @@
          Object.assign({ yaxis: { range: [-1.05, 1.05], title: "Imbalance" } }, line));
   }
 
+  // ------------------------------------------------------------- backtest ---
+  function renderBacktest() {
+    if (!S.groups.length && !(S.mode === "live" && S.live.rows.length)) return;
+    S.btDirty = false;
+    const groups = S.mode === "live" ? [{ rows: S.live.rows }] : S.groups;
+    const base = { size: +$("btsize").value, maxInv: +$("btinv").value, latency: +$("btlat").value,
+                   feeBps: Math.max(0, +$("btfee").value || 0), sampleMs: 60000 };
+    const th = +$("btth").value;
+    const strat = [{ name: "Always quote", o: Object.assign({}, base, { theta: 2 }), color: css("--ask") },
+                   { name: `Imbalance rule (±${th})`, o: Object.assign({}, base, { theta: th }), color: css("--bid") }];
+    const hs = [1, 2, 5, 10, 30, 60, 300];
+    let hours = 0;
+    for (const s of S.segs) hours += (s.t1 - s.t0) / 3.6e6;
+    for (const st of strat) {
+      st.runs = groups.map((g) => LOB.backtestMM(g.rows, st.o));
+      st.pnl = 0; st.fills = 0; st.shares = 0; st.maxInv = 0; st.dd = 0; st.fees = 0;
+      st.t = []; st.cum = []; st.inv = [];
+      let off = 0, mkN = hs.map(() => 0), mkD = hs.map(() => 0);
+      for (const r of st.runs) {
+        for (let i = 0; i < r.series.t.length; i++) { st.t.push(r.series.t[i]); st.cum.push(off + r.series.pnl[i]); st.inv.push(r.series.inv[i]); }
+        if (r.series.t.length) { st.t.push(null); st.cum.push(null); st.inv.push(null); } // gap between windows
+        st.dd = Math.max(st.dd, r.dd); off += r.pnl;
+        st.fills += r.fills.t.length; st.shares += r.shares; st.maxInv = Math.max(st.maxInv, r.maxInv); st.fees += r.fees;
+        LOB.markouts(r, hs).forEach((v, i) => { if (v != null) { mkN[i] += v * r.shares; mkD[i] += r.shares; } });
+      }
+      st.pnl = off;
+      st.mark = mkN.map((v, i) => (mkD[i] ? v / mkD[i] : null));
+    }
+    const [A, B] = strat, c = (v) => (v == null ? "–" : (v * 100).toFixed(2) + "¢");
+    const usd = (v) => (v == null || !Number.isFinite(v) ? "–" : (v < 0 ? "−$" : "$") + fmt(Math.abs(v), 2));
+    const row = (l, f) => `<tr><td>${l}</td><td>${f(A)}</td><td>${f(B)}</td></tr>`;
+    $("bt-table").innerHTML = `<table>
+      <tr><th>Measure</th><th>${A.name}</th><th>${B.name}</th></tr>
+      ${row("P&L", (x) => usd(x.pnl))}
+      ${row("P&L per day", (x) => usd(hours ? (x.pnl / hours) * 24 : NaN))}
+      ${row("Fills", (x) => fmt(x.fills, 0))}
+      ${row("Shares traded", (x) => fmt(x.shares, 0))}
+      ${row("P&L per share traded", (x) => c(x.shares ? x.pnl / x.shares : null))}
+      ${row("Gain per share at fill vs 10 s later", (x) => `${c(x.mark[0])} → ${c(x.mark[3])}`)}
+      ${row("Largest inventory, shares", (x) => fmt(x.maxInv, 0))}
+      ${row("Largest drawdown", (x) => usd(x.dd))}
+      ${row("Fees paid", (x) => usd(x.fees))}
+    </table>`;
+    const better = B.pnl > A.pnl, d = B.pnl - A.pnl;
+    $("s-bt").textContent = `${fmt(hours, 1)} hours replayed. ` +
+      (A.fills + B.fills === 0 ? "Neither strategy was filled; try a smaller quote size or a busier market."
+        : `The imbalance rule ${better ? "added" : "cost"} ${usd(Math.abs(d))} against always quoting, ` +
+          `trading ${fmt(B.shares, 0)} shares instead of ${fmt(A.shares, 0)}. ` +
+          (A.mark[3] != null ? `Ten seconds after a fill, always-quote fills were worth ${c(A.mark[3])} a share and imbalance-rule fills ${c(B.mark[3])}.` : ""));
+
+    const T = (st) => st.t.map((t) => (t == null ? null : tstr(t)));
+    plot("p-btpnl", strat.map((st) => ({ x: T(st), y: st.cum, name: st.name, mode: "lines", line: { color: st.color, width: 2 }, connectgaps: false })),
+         { yaxis: { title: "Dollars" }, hovermode: "x unified" });
+    plot("p-btinv", strat.map((st) => ({ x: T(st), y: st.inv, name: st.name, mode: "lines", line: { color: st.color, width: 1.5, shape: "hv" }, connectgaps: false })),
+         { yaxis: { title: "Shares" }, hovermode: "x unified" });
+    plot("p-btmark", strat.map((st) => ({ x: hs, y: st.mark.map((v) => (v == null ? null : v * 100)), name: st.name, mode: "lines+markers",
+                                          line: { color: st.color, width: 2 }, marker: { size: 8 } }))
+         .concat([{ x: [hs[0], hs[hs.length - 1]], y: [0, 0], mode: "lines", line: { color: css("--ink"), width: 1, dash: "dash" }, showlegend: false, hoverinfo: "skip" }]),
+         { xaxis: { type: "log", title: "Seconds after the fill" }, yaxis: { title: "Cents per share" } });
+    // daily P&L from the sampled series
+    const days = [...new Set(strat.flatMap((st) => st.t.filter((t) => t != null).map(dayOf)))].sort();
+    const daily = (st) => { const end = {}, start = {};
+      st.runs.forEach((r) => { let prevDay = null, carry = 0;
+        for (let i = 0; i < r.series.t.length; i++) { const dy = dayOf(r.series.t[i]);
+          if (dy !== prevDay) { start[dy] = (start[dy] || 0) + (i ? r.series.pnl[i - 1] : 0); if (prevDay) end[prevDay] = (end[prevDay] || 0) + r.series.pnl[i - 1]; prevDay = dy; } }
+        if (prevDay) end[prevDay] = (end[prevDay] || 0) + r.series.pnl[r.series.pnl.length - 1]; });
+      return days.map((dy) => (end[dy] || 0) - (start[dy] || 0)); };
+    plot("p-btday", strat.map((st) => ({ type: "bar", x: days, y: daily(st), name: st.name, marker: { color: st.color } })),
+         { barmode: "group", bargap: 0.3, yaxis: { title: "Dollars" }, xaxis: { type: "category" } });
+  }
+
   // ----------------------------------------------------------------- live ---
   function liveRow(recvMs, ts, ev, side, p, s, bb, ba, h) {
     const raw = [String(Math.round(recvMs * 1e6)), String(ts || ""), ev, side || "", p == null ? "" : String(p), s == null ? "" : String(s), bb || "", ba || "", h || ""];
@@ -499,7 +572,8 @@
     document.querySelectorAll("#mode button").forEach((b) => (b.onclick = () => setMode(b.dataset.m)));
     document.querySelectorAll("#tabs button").forEach((b) => (b.onclick = () => {
       document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("on", x === b));
-      ["book", "arr", "flow", "event"].forEach((t) => $("tab-" + t).classList.toggle("hide", t !== b.dataset.t));
+      ["book", "arr", "flow", "event", "bt"].forEach((t) => $("tab-" + t).classList.toggle("hide", t !== b.dataset.t));
+      if (b.dataset.t === "bt" && S.btDirty) setTimeout(renderBacktest, 30);
       window.dispatchEvent(new Event("resize")); // plots drawn while hidden need a resize
     }));
     $("load").onclick = loadSelection;
@@ -510,6 +584,7 @@
     $("proc").onchange = renderArrivals;
     $("evtime").onchange = () => renderEvent(true); $("evwin").onchange = () => renderEvent(true);
     $("evfind").onclick = () => renderEvent(false);
+    $("btrun").onclick = renderBacktest;
     $("hor").onchange = renderFlow; $("imbkey").onchange = renderFlow;
     $("export").onclick = exportCSV;
     $("connect").onclick = connect; $("findtop").onclick = findTop;

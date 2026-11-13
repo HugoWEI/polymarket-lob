@@ -46,6 +46,9 @@ only; **Export CSV** saves whatever is loaded, in the recorder's format.
 - The Event tab compares a window before and after a chosen time (by default the start of
   the largest five-minute move) and shows the average price a buyer would have paid by taking
   the resting asks at each moment after it.
+- The Backtest tab replays the recorded book with two simple market makers, one quoting
+  all the time and one pulling the quote that book imbalance says is about to be run over.
+  Fills are conservative (back of the queue, filled only beyond the size queued ahead).
 - Open the dashboard on a given market with `?market=<slug>`.
 - Only the first outcome token of each market is recorded; the other one mirrors it.
 - The Hawkes model is `mu + n*beta*sum(exp(-beta*(t - t_j)))`, fitted by maximum likelihood
