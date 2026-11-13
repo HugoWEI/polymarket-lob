@@ -21,7 +21,19 @@
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
   const status = (t) => { $("status").textContent = t; };
   const pad = (n) => String(n).padStart(2, "0");
-  function shifted(ms) { return S.tz === "utc" ? new Date(ms) : new Date(ms - new Date(ms).getTimezoneOffset() * 60000); }
+  // minutes to add to UTC to get New York time at that instant (handles daylight saving)
+  const nyFmt = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  function nyOffset(ms) {
+    const p = {}; for (const x of nyFmt.formatToParts(new Date(ms))) p[x.type] = x.value;
+    return (Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - Math.floor(ms / 1000) * 1000) / 60000;
+  }
+  function shifted(ms) {
+    if (S.tz === "utc") return new Date(ms);
+    if (S.tz === "ny") return new Date(ms + nyOffset(ms) * 60000);
+    return new Date(ms - new Date(ms).getTimezoneOffset() * 60000);
+  }
+  const tzName = () => (S.tz === "utc" ? "UTC" : S.tz === "ny" ? "New York" : "local");
   const tstr = (ms) => shifted(ms).toISOString().replace("T", " ").slice(0, 23);
   const hourOf = (ms) => shifted(ms).getUTCHours();
   const dayOf = (ms) => shifted(ms).toISOString().slice(0, 10);
@@ -265,7 +277,7 @@
     const hp = LOB.hourlyProfile(S.segs, key, hourOf), hrs = [...Array(24).keys()];
     const bar = (id, y, lab) => plot(id, [{ type: "bar", x: hrs, y, marker: { color: bid, line: { width: 0 } }, name: lab,
                                             hovertemplate: "%{x}:00<br>%{y:.4g}<extra></extra>" }],
-                                      { bargap: 0.25, xaxis: { title: `Hour of day (${S.tz === "utc" ? "UTC" : "local"})`, dtick: 2, range: [-0.6, 23.6] }, yaxis: { title: lab, rangemode: "tozero" } });
+                                      { bargap: 0.25, xaxis: { title: `Hour of day (${tzName()})`, dtick: 2, range: [-0.6, 23.6] }, yaxis: { title: lab, rangemode: "tozero" } });
     bar("p-hrate", hp.rate, "Events per minute"); bar("p-hspread", hp.spread, "Mean spread");
   }
 
@@ -327,7 +339,9 @@
   function parseEv() {
     const v = $("evtime").value;
     if (!v) return null;
-    return S.tz === "utc" ? Date.parse(v + "Z") : new Date(v).getTime();
+    if (S.tz === "utc") return Date.parse(v + "Z");
+    if (S.tz === "ny") { const g = Date.parse(v + "Z"); return g - nyOffset(g - nyOffset(g) * 60000) * 60000; }
+    return new Date(v).getTime();
   }
   function setEv(ms) { $("evtime").value = tstr(ms).slice(0, 19).replace(" ", "T"); }
   function findEvent() {
