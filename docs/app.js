@@ -328,7 +328,7 @@
     return ev;
   }
   function renderEvent(keep) {
-    const ids = ["p-evprice", "p-evcost", "p-evflow", "p-evimb"];
+    const ids = ["p-evprice", "p-evcost", "p-evact", "p-evflow", "p-evimb"];
     if (!S.segs.length) return;
     if (keep !== true || parseEv() == null) findEvent();
     const e = parseEv(), W = +$("evwin").value * 60000;
@@ -346,6 +346,11 @@
       ${row("Trades per minute", (x) => fmt(x.tradesPerMin, 2))}
       ${row("Traded size", (x) => fmt(x.size))}
       ${row("Net buying (buy − sell size)", (x) => fmt(x.net))}
+      ${row("Buy trades / sell trades", (x) => `${fmt(x.buys, 0)} / ${fmt(x.sells, 0)}`)}
+      ${row("Largest buy trade", (x) => fmt(x.largestBuy))}
+      ${row("Share of buying from the 5 largest buys", (x) => (x.top5BuyShare == null ? "–" : (x.top5BuyShare * 100).toFixed(0) + "%"))}
+      ${row("Ask size bought / cancelled / added", (x) => `${fmt(x.bought)} / ${fmt(x.askCxl)} / ${fmt(x.askAdd)}`)}
+      ${row("Bid size sold into / cancelled / added", (x) => `${fmt(x.sold)} / ${fmt(x.bidCxl)} / ${fmt(x.bidAdd)}`)}
       ${row("Book updates per minute", (x) => fmt(x.updatesPerMin, 1))}
       ${row("Mean spread", (x) => fmt(x.spread, 4))}
       ${row("Mean imbalance, top 5 levels", (x) => fmt(x.imb, 2))}
@@ -377,6 +382,22 @@
       const parts = [1, 5, 15].filter((m) => e + m * 60000 < b).map((m) => `${m} min after: ${fmt(at(m, 1), 3)}`);
       $("s-evcost").textContent = `Average price to buy by taking the asks. For 1,000 shares, ${parts.join(" · ") || "no data"}; mid at end of window ${fmt(settle, 3)}`;
     } else { empty("p-evcost"); $("s-evcost").textContent = ""; }
+
+    // activity score: how unusual each minute is against the six hours before it
+    const ac = LOB.activityScore(s), THR = 5, CAP = 60, names = ["Trades", "Book updates", "Traded size"];
+    const ai = []; for (let i = 0; i < ac.t.length; i++) if (ac.t[i] >= a && ac.t[i] <= b) ai.push(i);
+    if (ai.some((i) => ac.score[i] != null)) {
+      plot("p-evact", names.map((nm, k) => ({ x: ai.map((i) => tstr(ac.t[i])), y: ai.map((i) => (ac.z[k][i] == null ? null : Math.min(CAP, ac.z[k][i]))),
+                                              name: nm, mode: "lines", line: { color: cols[k], width: 2, shape: "hv" } }))
+        .concat([{ x: [tstr(a), tstr(b)], y: [THR, THR], mode: "lines", line: { color: ink, width: 1, dash: "dash" }, showlegend: false, hoverinfo: "skip" }]),
+        Object.assign({ yaxis: { title: "Deviations above normal", range: [-3, CAP + 3] }, hovermode: "x unified" }, line));
+      const first = ai.find((i) => ac.t[i] < e && ac.score[i] != null && ac.score[i] > THR);
+      let prior = 0, hrs = 0;
+      for (let i = 0; i < ac.t.length && ac.t[i] < a; i++) if (ac.score[i] != null) { hrs += 1 / 60; if (ac.score[i] > THR) prior++; }
+      $("s-evact").textContent = `Per minute, in standard deviations above the previous six hours (capped at ${CAP}); dashed line is the alert level of ${THR}. ` +
+        (first != null ? `First alert before the event: ${tstr(ac.t[first]).slice(11, 16)}, ${fmt((e - ac.t[first]) / 60000, 0)} minutes ahead. ` : "No alert before the event in this window. ") +
+        `The same alert fired in ${prior} of the ${fmt(hrs * 60, 0)} earlier minutes loaded.`;
+    } else { empty("p-evact", "Needs at least 30 minutes of data before the window"); $("s-evact").textContent = ""; }
 
     let c = 0;
     plot("p-evflow", [{ x: tr.map((i) => tstr(s.trades.t[i])), y: tr.map((i) => (c += s.trades.sign[i] * s.trades.s[i])), mode: "lines", name: "Net buying",

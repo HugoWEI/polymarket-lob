@@ -397,7 +397,15 @@
   /* Summary of one replayed segment between times a and b (ms). */
   function windowStats(s, a, b) {
     let tr = 0, size = 0, net = 0, upd = 0, sp = 0, im = 0, n = 0, rv = 0, m0 = null, m1 = null, prev = null;
-    for (let i = 0; i < s.trades.t.length; i++) { const t = s.trades.t[i]; if (t >= a && t < b) { tr++; size += s.trades.s[i]; net += s.trades.sign[i] * s.trades.s[i]; } }
+    let buys = 0, sells = 0, bought = 0, sold = 0, askCxl = 0, bidCxl = 0, askAdd = 0, bidAdd = 0;
+    const buySizes = [];
+    for (let i = 0; i < s.trades.t.length; i++) { const t = s.trades.t[i]; if (t >= a && t < b) {
+      tr++; size += s.trades.s[i]; net += s.trades.sign[i] * s.trades.s[i];
+      if (s.trades.sign[i] > 0) { buys++; bought += s.trades.s[i]; buySizes.push(s.trades.s[i]); } else { sells++; sold += s.trades.s[i]; } } }
+    for (let i = 0; i < s.cancels.t.length; i++) { const t = s.cancels.t[i]; if (t >= a && t < b) { if (s.cancels.side[i] > 0) bidCxl += s.cancels.s[i]; else askCxl += s.cancels.s[i]; } }
+    for (let i = 0; i < s.adds.t.length; i++) { const t = s.adds.t[i]; if (t >= a && t < b) { if (s.adds.side[i] > 0) bidAdd += s.adds.s[i]; else askAdd += s.adds.s[i]; } }
+    buySizes.sort((x, y) => y - x);
+    const top5 = buySizes.slice(0, 5).reduce((x, y) => x + y, 0);
     for (const t of s.updates.t) if (t >= a && t < b) upd++;
     const g = s.grid;
     for (let i = 0; i < g.t.length; i++) {
@@ -409,8 +417,40 @@
       prev = g.mid[i];
     }
     const mins = (b - a) / 60000;
-    return { trades: tr, tradesPerMin: tr / mins, size, net, updatesPerMin: upd / mins, spread: n ? sp / n : null,
+    return { buys, sells, bought, sold, askCxl, bidCxl, askAdd, bidAdd, largestBuy: buySizes[0] || 0,
+             top5BuyShare: bought ? top5 / bought : null,
+             trades: tr, tradesPerMin: tr / mins, size, net, updatesPerMin: upd / mins, spread: n ? sp / n : null,
              imb: n ? im / n : null, midStart: m0, midEnd: m1, vol: n > 1 ? Math.sqrt(rv / n) : null, seconds: n };
+  }
+
+  /* How unusual each minute is compared with the six hours before it. For trades, book
+     updates and traded size per minute: (value - trailing mean) / trailing standard deviation,
+     with a floor on the deviation so a silent baseline does not give infinite scores.
+     `score` is the largest of the three. Minutes with under 30 minutes of history are null. */
+  function activityScore(s, step, base, gap) {
+    step = step || 60000; base = base || 360; gap = gap || 5;
+    const n = Math.max(1, Math.ceil((s.t1 - s.t0) / step));
+    const X = [new Float64Array(n), new Float64Array(n), new Float64Array(n)];
+    const bin = (t) => Math.min(n - 1, Math.max(0, Math.floor((t - s.t0) / step)));
+    for (let i = 0; i < s.trades.t.length; i++) { const k = bin(s.trades.t[i]); X[0][k]++; X[2][k] += s.trades.s[i]; }
+    for (const t of s.updates.t) X[1][bin(t)]++;
+    const sz = Float64Array.from(s.trades.s).sort(), floors = [1, 1, Math.max(1, sz.length ? sz[sz.length >> 1] : 1)];
+    const out = { t: [], z: [[], [], []], score: [] };
+    const P = X.map((x) => { const p = new Float64Array(n + 1), q = new Float64Array(n + 1);
+      for (let i = 0; i < n; i++) { p[i + 1] = p[i] + x[i]; q[i + 1] = q[i] + x[i] * x[i]; } return [p, q]; });
+    for (let i = 0; i < n; i++) {
+      const lo = Math.max(0, i - base), hi = i - gap, m = hi - lo;
+      out.t.push(s.t0 + i * step);
+      if (m < 30) { out.z.forEach((z) => z.push(null)); out.score.push(null); continue; }
+      let best = -Infinity;
+      for (let k = 0; k < 3; k++) {
+        const mean = (P[k][0][hi] - P[k][0][lo]) / m, v = Math.max(0, (P[k][1][hi] - P[k][1][lo]) / m - mean * mean);
+        const z = (X[k][i] - mean) / Math.max(Math.sqrt(v), floors[k]);
+        out.z[k].push(z); if (z > best) best = z;
+      }
+      out.score.push(best);
+    }
+    return out;
   }
 
   /* Start of the largest mid move over `span` seconds across all segments. */
@@ -478,7 +518,7 @@
   }
 
   const api = { parseCSV, replaySegment, prepareTimes, interArrivals, poissonFit, hawkesFit, hawkesNLL,
-                ksTest, qqExp, acf, histogram, ccdf, imbalanceResponse, nextStep, sweepSeries, windowStats, detectEvent, flowVsReturn, signature,
+                ksTest, qqExp, acf, histogram, ccdf, imbalanceResponse, nextStep, sweepSeries, windowStats, activityScore, detectEvent, flowVsReturn, signature,
                 hourlyProfile, nelderMead, mulberry32, mean };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.LOB = api;
