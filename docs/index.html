@@ -171,23 +171,26 @@
     <div class="tabbar">
       <label>Quote size <select id="btsize"><option>10</option><option selected>100</option><option>1000</option></select></label>
       <label>Max inventory <select id="btinv"><option>300</option><option selected>1000</option><option>5000</option></select></label>
-      <label>Imbalance rule <select id="btth"><option value="0.4">Pull at ±0.4</option><option value="0.6" selected>Pull at ±0.6</option><option value="0.8">Pull at ±0.8</option></select></label>
+      <label>Imbalance level rule <select id="btth"><option value="2" selected>Off</option><option value="0.4">Pull at ±0.4</option><option value="0.6">Pull at ±0.6</option><option value="0.8">Pull at ±0.8</option></select></label>
+      <label>Imbalance jump rule <select id="btjump" title="Pull the quote on the side about to be hit when top-5 imbalance moves this far from its 30-minute average"><option value="off">Off</option><option value="0.15">Jump of 0.15</option><option value="0.2" selected>Jump of 0.2</option><option value="0.3">Jump of 0.3</option></select></label>
+      <label>Activity kill switch <select id="btkill" title="Uses activity in 10-second bins against the previous six hours"><option value="0">Off</option><option value="1">Pull quotes 10 min</option><option value="2" selected>Pull quotes and close position</option></select></label>
       <label>Latency <select id="btlat"><option value="0">None</option><option value="250" selected>250 ms</option><option value="1000">1 s</option><option value="5000">5 s</option></select></label>
       <label>Maker fee, bps <input type="number" id="btfee" value="0" min="0" step="1" style="width:80px"></label>
       <label>&nbsp;<button class="primary" id="btrun">Run backtest</button></label>
     </div>
-    <div class="card" style="margin-bottom:12px"><h3>Two market makers on the recorded book</h3><p id="s-bt"></p><div id="bt-table"></div></div>
+    <div class="card" style="margin-bottom:12px"><h3>Always quoting against your rules</h3><p id="s-bt"></p><div id="bt-table"></div></div>
     <div class="grid">
       <div class="card c6"><h3>Cumulative P&amp;L</h3><p>Dollars, inventory marked at the mid</p><div class="plot" id="p-btpnl"></div></div>
       <div class="card c6"><h3>Inventory</h3><p>Shares held; negative means short</p><div class="plot" id="p-btinv"></div></div>
       <div class="card c6"><h3>What happens after a fill</h3><p>Average gain per share against the mid, some seconds after being filled. Below zero means the price moved against us.</p><div class="plot" id="p-btmark"></div></div>
       <div class="card c6"><h3>P&amp;L by day</h3><p id="s-btday">Dollars per day</p><div class="plot" id="p-btday"></div></div>
     </div>
+    <p class="note">Your rules: the level rule pulls a quote while best-level imbalance is beyond the threshold. The jump rule pulls the quote about to be hit for 30 seconds when top-5 imbalance moves that far from its 30-minute average. The kill switch counts trades and book updates in 10-second bins and fires above 5 standard deviations of the previous six hours (it needs 30 minutes of history); it then pulls both quotes for 10 minutes and can close the position at the prices on the book, paying the spread.</p>
     <p class="note">Assumptions: quotes join the back of the queue at the best bid and ask and never create new price levels. We are filled only by size beyond what was queued ahead of us, so the fills are conservative. Our orders do not change what other traders did, which holds only for sizes small next to the book. Inventory left at the end of each loaded window is marked at the mid, not sold. Polymarket charges most makers no fee; set one to test sensitivity.</p>
   </section>
 </main>
 <script src="vendor/plotly.min.js"></script>
-<script src="stats.js?v=6"></script>
-<script src="app.js?v=6"></script>
+<script src="stats.js?v=7"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

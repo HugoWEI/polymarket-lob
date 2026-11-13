@@ -460,9 +460,16 @@
      below it. A trade through our price fills us completely. Our orders do not change what
      other traders did. Every quote change takes `latency` ms to reach the book, and a quote
      being cancelled can still be filled in the meantime.
-     Rule: with imbalance at the best level I = (bid - ask) / (bid + ask), pull the ask when
-     I > theta and pull the bid when I < -theta (theta >= 1 turns the rule off). Inventory is
-     capped at +/- maxInv shares. Negative inventory means selling shares we do not hold,
+     Optional rules (each off unless set):
+     - level rule: with imbalance at the best level I = (bid - ask) / (bid + ask), pull the ask
+       when I > theta and the bid when I < -theta (theta >= 1 turns it off);
+     - jump rule: when imbalance over the top 5 levels rises more than `jump` above its own
+       30-minute average, pull the ask for `hold` seconds (the bid, for a fall);
+     - activity kill switch: book updates and trades are counted in 10-second bins; when the
+       current bin is more than `killZ` standard deviations above the previous six hours,
+       pull both quotes for `killMins` minutes, and with kill = 2 also close the position by
+       taking the best prices on the other side of the book.
+     Inventory is capped at +/- maxInv shares. Negative inventory means selling shares we do not hold,
      which on Polymarket is the same as buying the other outcome.
      P&L is cash plus inventory marked at the mid, in dollars. */
   function backtestMM(rows, o) {
@@ -471,6 +478,44 @@
     const side = { bid: { live: null, pend: null }, ask: { live: null, pend: null } };
     let inv = 0, cash = 0, fees = 0, maxInv = 0, peak = 0, dd = 0, nextS = null, lastT = null;
     const fills = { t: [], dir: [], p: [], s: [] }, midT = [], midV = [], series = { t: [], pnl: [], inv: [] };
+    const jumpOn = Number.isFinite(o.jump), tau = (o.jumpTau || 1800) * 1000, hold = (o.hold || 30) * 1000;
+    let ema = null, prevI5 = null, emaT = null, holdAsk = -Infinity, holdBid = -Infinity;
+    const BIN = 10000, NWIN = (6 * 3600000) / BIN, killZ = o.killZ || 5, kills = [];
+    const win = [];
+    let winSum = 0, winSq = 0, binStart = null, binCount = 0, killUntil = -Infinity, flatAt = null, closes = 0;
+    const top5 = (map, isBid) => {
+      const ks = [], ss = [];
+      for (const [k, s] of map) {
+        let i = ks.length;
+        if (i === 5) { if (!(isBid ? k > ks[4] : k < ks[4])) continue; ks.pop(); ss.pop(); i = 4; }
+        while (i > 0 && (isBid ? k > ks[i - 1] : k < ks[i - 1])) i--;
+        ks.splice(i, 0, k); ss.splice(i, 0, s);
+      }
+      let tot = 0; for (const s of ss) tot += s; return tot;
+    };
+    const pushBin = (c) => { win.push(c); winSum += c; winSq += c * c;
+      if (win.length > NWIN) { const x = win.shift(); winSum -= x; winSq -= x * x; } };
+    const activity = (t) => {
+      if (!o.kill) return;
+      if (binStart == null) binStart = Math.floor(t / BIN) * BIN;
+      if (t - binStart >= 6 * 3600000) { win.length = 0; winSum = 0; winSq = 0; binStart = Math.floor(t / BIN) * BIN; binCount = 0; }
+      while (t >= binStart + BIN) { pushBin(binCount); binCount = 0; binStart += BIN; }
+      binCount++;
+      if (win.length < 180 || t < killUntil) return; // needs 30 minutes of history
+      const m = winSum / win.length, sd = Math.sqrt(Math.max(0, winSq / win.length - m * m));
+      if ((binCount - m) / Math.max(sd, 1) > killZ) {
+        killUntil = t + (o.killMins || 10) * 60000; kills.push(t);
+        if (o.kill === 2) flatAt = t + o.latency;
+      }
+    };
+    const flatten = (t) => {
+      flatAt = null;
+      if (Math.abs(inv) < 1e-9) return;
+      const sell = inv > 0, lv = Array.from(sell ? bids : asks).sort((a, b) => (sell ? b[0] - a[0] : a[0] - b[0]));
+      let rem = Math.abs(inv);
+      for (const [k, s] of lv) { const q = Math.min(rem, s); fill(!sell, k, q, t); rem -= q; if (rem <= 1e-9) break; }
+      closes++;
+    };
     const lvl = (isBid, k) => (isBid ? bids : asks).get(k) || 0;
     const ok = () => bb > -Infinity && ba < Infinity && bb < ba;
     const mid = () => (bb + ba) / 2 / K;
@@ -502,8 +547,9 @@
       if (!ok()) return;
       const qb = bids.get(bb), qa = asks.get(ba), I = (qb - qa) / (qb + qa);
       // quote only the room left under the inventory limit (a smaller order near the limit)
-      const want = { bid: inv < o.maxInv && !(I < -o.theta) ? bb : null,
-                     ask: inv > -o.maxInv && !(I > o.theta) ? ba : null };
+      const off = t < killUntil;
+      const want = { bid: !off && t >= holdBid && inv < o.maxInv && !(I < -o.theta) ? bb : null,
+                     ask: !off && t >= holdAsk && inv > -o.maxInv && !(I > o.theta) ? ba : null };
       for (const nm of ["bid", "ask"]) {
         const sd = side[nm], cur = sd.pend ? sd.pend.k : sd.live ? sd.live.k : null;
         if (cur !== want[nm]) sd.pend = { t: t + o.latency, k: want[nm] };
@@ -521,6 +567,8 @@
       if (nextS == null) nextS = Math.ceil(t / o.sampleMs) * o.sampleMs;
       while (nextS <= t) { sample(nextS); nextS += o.sampleMs; }
       execPending(t);
+      if (flatAt != null && flatAt <= t) flatten(t);
+      if (r.ev === "trade" || r.ev === "change") activity(t);
       if (r.ev === "trade") {
         const k = Math.round(r.p * K), buyAgg = r.side === "BUY", sd = buyAgg ? side.ask : side.bid, lv = sd.live;
         if (lv) {
@@ -539,6 +587,14 @@
         const lv = (isBid ? side.bid : side.ask).live;
         if (lv && lv.k === k && lv.ahead > r.s) lv.ahead = r.s;
         if (ok() && (!midV.length || midV[midV.length - 1] !== mid())) { midT.push(t); midV.push(mid()); }
+        if (jumpOn && ok()) {
+          const b5 = top5(bids, true), a5 = top5(asks, false), I5 = (b5 - a5) / (b5 + a5);
+          if (ema == null) ema = I5;
+          else ema += (1 - Math.exp(-(t - emaT) / tau)) * (prevI5 - ema);
+          prevI5 = I5; emaT = t;
+          if (I5 - ema > o.jump) holdAsk = t + hold;
+          if (I5 - ema < -o.jump) holdBid = t + hold;
+        }
       }
       decide(t);
       lastT = t;
@@ -547,7 +603,7 @@
     let shares = 0;
     for (const q of fills.s) shares += q;
     return { pnl: series.pnl.length ? series.pnl[series.pnl.length - 1] : 0, fills, shares, maxInv, dd, fees,
-             series, midT, midV, endInv: inv };
+             series, midT, midV, endInv: inv, kills, closes };
   }
 
   /* Average gain per share of each fill, `h` seconds later, measured against the mid. */

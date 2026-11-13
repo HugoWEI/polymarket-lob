@@ -416,21 +416,27 @@
     const groups = S.mode === "live" ? [{ rows: S.live.rows }] : S.groups;
     const base = { size: +$("btsize").value, maxInv: +$("btinv").value, latency: +$("btlat").value,
                    feeBps: Math.max(0, +$("btfee").value || 0), sampleMs: 60000 };
-    const th = +$("btth").value;
     if (base.size > base.maxInv) base.size = base.maxInv; // a quote cannot exceed the inventory limit
-    const strat = [{ name: "Always quote", o: Object.assign({}, base, { theta: 2 }), color: css("--ask") },
-                   { name: `Imbalance rule (±${th})`, o: Object.assign({}, base, { theta: th }), color: css("--bid") }];
+    const th = +$("btth").value, jv = $("btjump").value, kill = +$("btkill").value;
+    const rules = { theta: th, jump: jv === "off" ? Infinity : +jv, kill, killMins: 10 };
+    const desc = [th < 1 ? `level ±${th}` : null, jv !== "off" ? `jump ${jv}` : null,
+                  kill ? (kill === 2 ? "kill switch + close" : "kill switch") : null].filter(Boolean);
+    const strat = [{ name: "Always quote", o: Object.assign({}, base, { theta: 2, jump: Infinity, kill: 0 }), color: css("--ask") },
+                   { name: desc.length ? `Your rules (${desc.join(", ")})` : "Your rules (none on)", o: Object.assign({}, base, rules), color: css("--bid") }];
     const hs = [1, 2, 5, 10, 30, 60, 300];
     let hours = 0;
     for (const s of S.segs) hours += (s.t1 - s.t0) / 3.6e6;
     for (const st of strat) {
       st.runs = groups.map((g) => LOB.backtestMM(g.rows, st.o));
       st.pnl = 0; st.fills = 0; st.shares = 0; st.maxInv = 0; st.dd = 0; st.fees = 0;
-      st.t = []; st.cum = []; st.inv = [];
+      st.t = []; st.cum = []; st.inv = []; st.kills = []; st.closes = 0;
       let off = 0, mkN = hs.map(() => 0), mkD = hs.map(() => 0);
       for (const r of st.runs) {
         for (let i = 0; i < r.series.t.length; i++) { st.t.push(r.series.t[i]); st.cum.push(off + r.series.pnl[i]); st.inv.push(r.series.inv[i]); }
         if (r.series.t.length) { st.t.push(null); st.cum.push(null); st.inv.push(null); } // gap between windows
+        for (const kt of r.kills) { let j = 0; while (j < r.series.t.length - 1 && r.series.t[j + 1] <= kt) j++;
+          st.kills.push({ t: kt, y: off + (r.series.pnl[j] || 0) }); }
+        st.closes += r.closes;
         st.dd = Math.max(st.dd, r.dd); off += r.pnl;
         st.fills += r.fills.t.length; st.shares += r.shares; st.maxInv = Math.max(st.maxInv, r.maxInv); st.fees += r.fees;
         LOB.markouts(r, hs).forEach((v, i) => { if (v != null) { mkN[i] += v * r.shares; mkD[i] += r.shares; } });
@@ -452,16 +458,19 @@
       ${row("Largest inventory, shares", (x) => fmt(x.maxInv, 0))}
       ${row("Largest drawdown", (x) => usd(x.dd))}
       ${row("Fees paid", (x) => usd(x.fees))}
+      ${row("Kill switch triggers / positions closed", (x) => `${fmt(x.kills.length, 0)} / ${fmt(x.closes, 0)}`)}
     </table>`;
     const better = B.pnl > A.pnl, d = B.pnl - A.pnl;
     $("s-bt").textContent = `${fmt(hours, 1)} hours replayed. ` +
       (A.fills + B.fills === 0 ? "Neither strategy was filled. The quote may be too large to get past the size queued ahead; try a smaller quote size or a busier market."
-        : `The imbalance rule ${better ? "added" : "cost"} ${usd(Math.abs(d))} against always quoting, ` +
+        : `Your rules ${better ? "added" : "cost"} ${usd(Math.abs(d))} against always quoting, ` +
           `trading ${fmt(B.shares, 0)} shares instead of ${fmt(A.shares, 0)}. ` +
-          (A.mark[3] != null ? `Ten seconds after a fill, always-quote fills were worth ${c(A.mark[3])} a share and imbalance-rule fills ${c(B.mark[3])}.` : ""));
+          (A.mark[3] != null ? `Ten seconds after a fill, always-quote fills were worth ${c(A.mark[3])} a share and your rules' fills ${c(B.mark[3])}.` : ""));
 
     const T = (st) => st.t.map((t) => (t == null ? null : tstr(t)));
-    plot("p-btpnl", strat.map((st) => ({ x: T(st), y: st.cum, name: st.name, mode: "lines", line: { color: st.color, width: 2 }, connectgaps: false })),
+    plot("p-btpnl", strat.map((st) => ({ x: T(st), y: st.cum, name: st.name, mode: "lines", line: { color: st.color, width: 2 }, connectgaps: false }))
+         .concat(B.kills.length ? [{ x: B.kills.map((k) => tstr(k.t)), y: B.kills.map((k) => k.y), name: "Kill switch fired", mode: "markers",
+                                     marker: { color: css("--ink"), size: 9, symbol: "x" } }] : []),
          { yaxis: { title: "Dollars" }, hovermode: "x unified" });
     plot("p-btinv", strat.map((st) => ({ x: T(st), y: st.inv, name: st.name, mode: "lines", line: { color: st.color, width: 1.5, shape: "hv" }, connectgaps: false })),
          { yaxis: { title: "Shares" }, hovermode: "x unified" });
